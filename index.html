@@ -7,6 +7,7 @@
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
   <script src="https://cdn.jsdelivr.net/npm/pdf-lib@1.17.1/dist/pdf-lib.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+  <script src="https://accounts.google.com/gsi/client" async defer></script>
   <style>
     :root {
       --bg: #0f172a;
@@ -507,7 +508,7 @@
     <button onclick="showTab('tab-miete', this)">📅 Vermietung &amp; Staffel</button>
     <button onclick="showTab('tab-textbausteine', this)">✍️ Textbausteine</button>
     <button onclick="showTab('tab-statistik', this)">📊 Umsatz-Statistik</button>
-    <button onclick="showTab('tab-backup', this)">💾 USB-Backup</button>
+    <button onclick="showTab('tab-backup', this)">💾 Backup (USB &amp; Google Drive)</button>
     <button onclick="showTab('tab-firma', this)">⚙️ Firmendaten &amp; Logo</button>
   </nav>
 
@@ -1338,7 +1339,7 @@
     </section>
 
     <!-- =================================================================== -->
-    <!-- TAB 7: USB-STICK BACKUP                                             -->
+    <!-- TAB 7: USB-STICK & GOOGLE DRIVE BACKUP                              -->
     <!-- =================================================================== -->
     <section id="tab-backup" class="section">
       <div class="card">
@@ -1356,6 +1357,60 @@
         <div style="display:flex; gap:12px; align-items:center; flex-wrap:wrap;">
           <input type="file" id="restore-file" accept=".json" style="max-width:340px;" />
           <button class="btn btn-warning" onclick="restoreBackupFromStick()">⬆️ Backup einspielen</button>
+        </div>
+      </div>
+
+      <!-- GOOGLE DRIVE CLOUD-BACKUP -->
+      <div class="card">
+        <div class="card-header">
+          <div>
+            <h2>☁️ Google Drive Cloud-Backup</h2>
+            <p style="margin:4px 0 0 0; font-size:0.84rem; color:var(--muted);">
+              Sichere deine kompletten Warenwirtschafts-Daten direkt in einen eigenen Ordner (<strong>DK-CUSTOM-Backups</strong>) in deinem Google Drive oder stelle sie von dort wieder her.
+            </p>
+          </div>
+          <span id="gdrive-status-badge" class="pill pill-entwurf">Nicht verbunden</span>
+        </div>
+
+        <!-- Google OAuth Client-ID Konfiguration -->
+        <div style="background:var(--surface-2); border:1px solid var(--border); border-radius:8px; padding:12px; margin-bottom:16px;">
+          <div class="grid-2" style="align-items:end; margin-bottom:0;">
+            <div class="form-group" style="margin-bottom:0;">
+              <label>Google OAuth 2.0 Client-ID (aus Google Cloud Console)</label>
+              <input type="text" id="gdrive-client-id" placeholder="z. B. 1234567890-abc123def456.apps.googleusercontent.com" />
+            </div>
+            <div style="display:flex; gap:8px; flex-wrap:wrap;">
+              <button type="button" class="btn btn-secondary" onclick="saveGoogleDriveClientId()">💾 Client-ID speichern</button>
+              <button type="button" class="btn" onclick="connectGoogleDrive()">🔗 Mit Google Drive verbinden</button>
+            </div>
+          </div>
+          <p style="margin:8px 0 0 0; font-size:0.78rem; color:var(--muted);">
+            Hinweis: Aktiviere in der <a href="https://console.cloud.google.com/apis/library/drive.googleapis.com" target="_blank" style="color:#a5b4fc;">Google Cloud Console</a> die <strong>Google Drive API</strong> und trage die Domain/URL dieser App unter <em>Autorisierte JavaScript-Quellen</em> ein.
+          </p>
+        </div>
+
+        <!-- Aktionen für Google Drive -->
+        <div style="display:flex; gap:12px; flex-wrap:wrap; margin-bottom:16px;">
+          <button type="button" class="btn btn-success" onclick="backupToGoogleDrive()">☁️ Jetzt Backup in Google Drive speichern</button>
+          <button type="button" class="btn btn-secondary" onclick="listGoogleDriveBackups()">🔄 Backups aus Google Drive laden</button>
+        </div>
+
+        <!-- Liste der gespeicherten Backups in Google Drive -->
+        <div id="gdrive-backups-wrap" style="display:none;">
+          <h3 style="margin-bottom:8px;">Gespeicherte Backups in Google Drive (Ordner: DK-CUSTOM-Backups)</h3>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Dateiname</th>
+                  <th>Erstellt am</th>
+                  <th>Dateigröße</th>
+                  <th>Aktion</th>
+                </tr>
+              </thead>
+              <tbody id="gdrive-backups-tbody"></tbody>
+            </table>
+          </div>
         </div>
       </div>
     </section>
@@ -1673,6 +1728,7 @@
 
   window.addEventListener('DOMContentLoaded', async () => {
     applyLogoToUI();
+    initGoogleDriveClientIdUI();
     sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
     const { data: { session } } = await sb.auth.getSession();
     if (session) startApp();
@@ -4345,10 +4401,9 @@
   }
 
   // =========================================================================
-  // USB-STICK BACKUP & RESTORE
+  // USB-STICK & GOOGLE DRIVE BACKUP & RESTORE
   // =========================================================================
-  async function exportBackupToStick() {
-    showToast('⏳ Erstelle Backup...');
+  async function createFullBackupObject() {
     const [firma, kunden, artikel, belege, positionen, vermietungen, bausteine, mietfaktoren] = await Promise.all([
       sb.from('firmendaten').select('*'),
       sb.from('kunden').select('*'),
@@ -4360,7 +4415,7 @@
       sb.from('mietfaktoren').select('*')
     ]);
 
-    const backupObj = {
+    return {
       exportiert_am: new Date().toISOString(),
       version: '7.6',
       firmendaten: firma.data || [],
@@ -4372,7 +4427,22 @@
       textbausteine: bausteine.data || [],
       mietfaktoren: mietfaktoren.data || []
     };
+  }
 
+  async function applyBackupData(data) {
+    if (data.firmendaten?.length) await sb.from('firmendaten').upsert(data.firmendaten);
+    if (data.mietfaktoren?.length) await sb.from('mietfaktoren').upsert(data.mietfaktoren);
+    if (data.kunden?.length) await sb.from('kunden').upsert(data.kunden);
+    if (data.artikel?.length) await sb.from('artikel').upsert(data.artikel);
+    if (data.belege?.length) await sb.from('belege').upsert(data.belege);
+    if (data.beleg_positionen?.length) await sb.from('beleg_positionen').upsert(data.beleg_positionen);
+    if (data.vermietungen?.length) await sb.from('vermietungen').upsert(data.vermietungen);
+    if (data.textbausteine?.length) await sb.from('textbausteine').upsert(data.textbausteine);
+  }
+
+  async function exportBackupToStick() {
+    showToast('⏳ Erstelle Backup...');
+    const backupObj = await createFullBackupObject();
     const blob = new Blob([JSON.stringify(backupObj, null, 2)], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
@@ -4389,17 +4459,219 @@
     if (!confirm('Bestehende Datensätze mit gleicher ID werden aktualisiert. Fortfahren?')) return;
 
     const data = JSON.parse(await fileInput.files[0].text());
-    if (data.firmendaten?.length) await sb.from('firmendaten').upsert(data.firmendaten);
-    if (data.mietfaktoren?.length) await sb.from('mietfaktoren').upsert(data.mietfaktoren);
-    if (data.kunden?.length) await sb.from('kunden').upsert(data.kunden);
-    if (data.artikel?.length) await sb.from('artikel').upsert(data.artikel);
-    if (data.belege?.length) await sb.from('belege').upsert(data.belege);
-    if (data.beleg_positionen?.length) await sb.from('beleg_positionen').upsert(data.beleg_positionen);
-    if (data.vermietungen?.length) await sb.from('vermietungen').upsert(data.vermietungen);
-    if (data.textbausteine?.length) await sb.from('textbausteine').upsert(data.textbausteine);
+    await applyBackupData(data);
 
     showToast('✅ Backup erfolgreich eingespielt!');
     await reloadAllData();
+  }
+
+  // --- Google Drive Backup Integration ---
+  const GDRIVE_SCOPE = 'https://www.googleapis.com/auth/drive.file';
+  const GDRIVE_FOLDER_NAME = 'DK-CUSTOM-Backups';
+  let gdriveAccessToken = null;
+  let gdriveTokenClient = null;
+
+  function initGoogleDriveClientIdUI() {
+    const savedId = localStorage.getItem('dkc_gdrive_client_id') || '';
+    const inp = document.getElementById('gdrive-client-id');
+    if (inp && savedId) inp.value = savedId;
+  }
+
+  function saveGoogleDriveClientId() {
+    const val = document.getElementById('gdrive-client-id').value.trim();
+    if (!val) return alert('Bitte zuerst eine gültige Google OAuth Client-ID eingeben.');
+    localStorage.setItem('dkc_gdrive_client_id', val);
+    gdriveTokenClient = null;
+    showToast('✅ Google Client-ID gespeichert!');
+  }
+
+  function ensureGoogleDriveAuth(onAuthenticated) {
+    const clientId = document.getElementById('gdrive-client-id').value.trim() || localStorage.getItem('dkc_gdrive_client_id') || '';
+    if (!clientId) {
+      alert('Bitte trage zuerst deine Google OAuth 2.0 Client-ID im Feld oben ein.');
+      return;
+    }
+    localStorage.setItem('dkc_gdrive_client_id', clientId);
+
+    if (!window.google || !google.accounts || !google.accounts.oauth2) {
+      alert('Die Google-Bibliothek wird noch geladen oder wird blockiert. Bitte kurz warten und erneut versuchen.');
+      return;
+    }
+
+    if (gdriveAccessToken && onAuthenticated) {
+      onAuthenticated();
+      return;
+    }
+
+    gdriveTokenClient = google.accounts.oauth2.initTokenClient({
+      client_id: clientId,
+      scope: GDRIVE_SCOPE,
+      callback: (tokenResponse) => {
+        if (tokenResponse.error) {
+          alert('Google Anmeldung fehlgeschlagen: ' + tokenResponse.error);
+          return;
+        }
+        gdriveAccessToken = tokenResponse.access_token;
+        const badge = document.getElementById('gdrive-status-badge');
+        if (badge) {
+          badge.textContent = '✓ Mit Google Drive verbunden';
+          badge.className = 'pill pill-bezahlt';
+        }
+        showToast('☁️ Mit Google Drive verbunden!');
+        if (onAuthenticated) onAuthenticated();
+      }
+    });
+
+    gdriveTokenClient.requestAccessToken({ prompt: gdriveAccessToken ? '' : 'consent' });
+  }
+
+  function connectGoogleDrive() {
+    ensureGoogleDriveAuth(() => {
+      listGoogleDriveBackups();
+    });
+  }
+
+  async function gdriveFetch(url, options = {}) {
+    const res = await fetch(url, {
+      ...options,
+      headers: {
+        Authorization: `Bearer ${gdriveAccessToken}`,
+        ...(options.headers || {})
+      }
+    });
+    if (res.status === 401) {
+      gdriveAccessToken = null;
+      const badge = document.getElementById('gdrive-status-badge');
+      if (badge) {
+        badge.textContent = 'Sitzung abgelaufen';
+        badge.className = 'pill pill-offen';
+      }
+      throw new Error('Google-Sitzung abgelaufen. Bitte erneut auf „Mit Google Drive verbinden“ klicken.');
+    }
+    if (!res.ok) {
+      const errText = await res.text();
+      throw new Error(`Google Drive Fehler (${res.status}): ${errText}`);
+    }
+    return res;
+  }
+
+  async function getOrCreateBackupFolderId() {
+    const q = encodeURIComponent(`name = '${GDRIVE_FOLDER_NAME}' and mimeType = 'application/vnd.google-apps.folder' and trashed = false`);
+    const searchRes = await gdriveFetch(`https://www.googleapis.com/drive/v3/files?q=${q}&fields=files(id,name)`);
+    const searchData = await searchRes.json();
+    if (searchData.files && searchData.files.length > 0) {
+      return searchData.files[0].id;
+    }
+
+    const createRes = await gdriveFetch('https://www.googleapis.com/drive/v3/files', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        name: GDRIVE_FOLDER_NAME,
+        mimeType: 'application/vnd.google-apps.folder'
+      })
+    });
+    const folder = await createRes.json();
+    return folder.id;
+  }
+
+  function backupToGoogleDrive() {
+    ensureGoogleDriveAuth(async () => {
+      try {
+        showToast('⏳ Erstelle Backup & lade zu Google Drive hoch...');
+        const backupObj = await createFullBackupObject();
+        const jsonContent = JSON.stringify(backupObj, null, 2);
+        const folderId = await getOrCreateBackupFolderId();
+
+        const now = new Date();
+        const stamp = `${now.toISOString().slice(0, 10)}_${String(now.getHours()).padStart(2, '0')}-${String(now.getMinutes()).padStart(2, '0')}`;
+        const fileName = `wawi-backup-${stamp}.json`;
+
+        const metadata = {
+          name: fileName,
+          mimeType: 'application/json',
+          parents: [folderId]
+        };
+
+        const boundary = '-------dkc_backup_boundary_' + Date.now();
+        const multipartBody =
+          `--${boundary}\r\n` +
+          `Content-Type: application/json; charset=UTF-8\r\n\r\n` +
+          `${JSON.stringify(metadata)}\r\n` +
+          `--${boundary}\r\n` +
+          `Content-Type: application/json\r\n\r\n` +
+          `${jsonContent}\r\n` +
+          `--${boundary}--`;
+
+        await gdriveFetch('https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart', {
+          method: 'POST',
+          headers: {
+            'Content-Type': `multipart/related; boundary=${boundary}`
+          },
+          body: multipartBody
+        });
+
+        showToast(`☁️ Backup „${fileName}“ erfolgreich in Google Drive gespeichert!`);
+        await listGoogleDriveBackups();
+      } catch (err) {
+        alert('Fehler beim Google Drive Backup: ' + err.message);
+      }
+    });
+  }
+
+  function listGoogleDriveBackups() {
+    ensureGoogleDriveAuth(async () => {
+      try {
+        const folderId = await getOrCreateBackupFolderId();
+        const q = encodeURIComponent(`'${folderId}' in parents and mimeType = 'application/json' and trashed = false`);
+        const res = await gdriveFetch(`https://www.googleapis.com/drive/v3/files?q=${q}&orderBy=createdTime desc&fields=files(id,name,createdTime,size)`);
+        const data = await res.json();
+        const files = data.files || [];
+
+        const wrap = document.getElementById('gdrive-backups-wrap');
+        const tbody = document.getElementById('gdrive-backups-tbody');
+        wrap.style.display = 'block';
+
+        if (!files.length) {
+          tbody.innerHTML = '<tr><td colspan="4" style="color:var(--muted);">Noch keine Backups im Ordner DK-CUSTOM-Backups vorhanden.</td></tr>';
+          return;
+        }
+
+        tbody.innerHTML = files.map(f => {
+          const dt = f.createdTime ? new Date(f.createdTime).toLocaleString('de-DE') : '-';
+          const kb = f.size ? (Number(f.size) / 1024).toFixed(1) + ' KB' : '-';
+          return `
+            <tr>
+              <td><strong>${escHtml(f.name)}</strong></td>
+              <td>${escHtml(dt)}</td>
+              <td>${escHtml(kb)}</td>
+              <td>
+                <button type="button" class="btn btn-warning btn-sm" onclick="restoreFromGoogleDrive('${escHtml(f.id)}', '${escHtml(f.name)}')">⬆️ Wiederherstellen</button>
+              </td>
+            </tr>
+          `;
+        }).join('');
+      } catch (err) {
+        alert('Fehler beim Laden der Google Drive Backups: ' + err.message);
+      }
+    });
+  }
+
+  function restoreFromGoogleDrive(fileId, fileName) {
+    if (!confirm(`Backup „${fileName}“ aus Google Drive laden und in die Datenbank einspielen? Bestehende Datensätze mit gleicher ID werden aktualisiert.`)) return;
+
+    ensureGoogleDriveAuth(async () => {
+      try {
+        showToast('⏳ Lade Backup aus Google Drive...');
+        const res = await gdriveFetch(`https://www.googleapis.com/drive/v3/files/${encodeURIComponent(fileId)}?alt=media`);
+        const data = await res.json();
+        await applyBackupData(data);
+        showToast(`✅ Backup „${fileName}“ erfolgreich aus Google Drive wiederhergestellt!`);
+        await reloadAllData();
+      } catch (err) {
+        alert('Fehler beim Wiederherstellen: ' + err.message);
+      }
+    });
   }
 </script>
 </body>
