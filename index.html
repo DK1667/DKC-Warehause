@@ -3,7 +3,12 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>DK CUSTOM – Warenwirtschaft, Angebote & Rechnungen</title>
+  <meta name="theme-color" content="#6366f1" />
+  <meta name="mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="apple-mobile-web-app-title" content="DK CUSTOM" />
+  <title>DK CUSTOM – Warenwirtschaft, Angebote &amp; Rechnungen</title>
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
   <script src="https://cdn.jsdelivr.net/npm/pdf-lib@1.17.1/dist/pdf-lib.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
@@ -417,6 +422,37 @@
       display: none;
     }
 
+    /* PWA Install Modal */
+    .pwa-modal-backdrop {
+      display: none;
+      position: fixed;
+      inset: 0;
+      background: rgba(2, 6, 23, 0.78);
+      z-index: 10000;
+      align-items: center;
+      justify-content: center;
+      padding: 16px;
+    }
+    .pwa-modal-backdrop.open { display: flex; }
+    .pwa-modal-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      max-width: 520px;
+      width: 100%;
+      padding: 24px;
+      box-shadow: 0 25px 50px rgba(0, 0, 0, 0.55);
+    }
+    .pwa-guide-box {
+      background: var(--surface-2);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 12px 14px;
+      margin-bottom: 10px;
+      font-size: 0.88rem;
+    }
+    .pwa-guide-box strong { color: #c4b5fd; display: block; margin-bottom: 4px; }
+
     /* =======================================================================
        DRUCK-STYLES: EXAKT 1:1 AUSGABE DER PAGINIERTEN A4-SEITEN OHNE STAUCHUNG
        ======================================================================= */
@@ -435,7 +471,7 @@
         height: auto !important;
         overflow: visible !important;
       }
-      #login-screen, #app-screen, .toast {
+      #login-screen, #app-screen, .toast, .pwa-modal-backdrop {
         display: none !important;
       }
       #print-area {
@@ -465,6 +501,37 @@
 </head>
 <body>
 
+<!-- PWA INSTALLATIONS-ANLEITUNG MODAL -->
+<div id="pwa-install-modal" class="pwa-modal-backdrop" onclick="if(event.target===this) closeInstallModal()">
+  <div class="pwa-modal-card">
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px;">
+      <h3 style="margin:0;">📲 DK CUSTOM als App installieren</h3>
+      <button type="button" class="btn btn-secondary btn-sm" onclick="closeInstallModal()">✕</button>
+    </div>
+    <p style="color:var(--muted); font-size:0.88rem; margin-top:0;">
+      Installiere die Warenwirtschaft direkt auf deinem Handy, Tablet oder PC/Mac – mit eigenem App-Symbol und ohne störende Browser-Leiste:
+    </p>
+    <div id="pwa-native-action" style="display:none; margin-bottom:14px;">
+      <button type="button" class="btn btn-success" style="width:100%; justify-content:center;" onclick="triggerNativeInstall()">⚡ Jetzt direkt installieren</button>
+    </div>
+    <div class="pwa-guide-box">
+      <strong>📱 iPhone &amp; iPad (Safari):</strong>
+      Tippe unten (oder oben) auf <strong>Teilen</strong> (<span aria-hidden="true">⬆️</span>) &rarr; scrolle zu <strong>„Zum Home-Bildschirm“</strong> &rarr; tippe oben rechts auf <strong>„Hinzufügen“</strong>.
+    </div>
+    <div class="pwa-guide-box">
+      <strong>🤖 Android (Chrome / Edge):</strong>
+      Tippe oben rechts auf das <strong>Drei-Punkte-Menü (⋮)</strong> &rarr; <strong>„App installieren“</strong> oder <strong>„Zum Startbildschirm hinzufügen“</strong>.
+    </div>
+    <div class="pwa-guide-box">
+      <strong>💻 Windows &amp; Mac (Chrome / Edge):</strong>
+      Klicke oben rechts im Browser auf das <strong>Installieren-Symbol</strong> bzw. ins <strong>Menü (⋮ / ⋯)</strong> &rarr; <strong>„Apps“ &rarr; „Diese Seite als App installieren“</strong>.
+    </div>
+    <div style="text-align:right; margin-top:14px;">
+      <button type="button" class="btn btn-secondary btn-sm" onclick="closeInstallModal()">Verstanden</button>
+    </div>
+  </div>
+</div>
+
 <!-- LOGIN -->
 <div id="login-screen">
   <div class="login-card">
@@ -483,6 +550,9 @@
       </div>
       <button type="submit" class="btn" style="width:100%; justify-content:center;">Anmelden</button>
     </form>
+    <button type="button" class="btn btn-secondary btn-sm" onclick="handleInstallButtonClick()" style="width:100%; justify-content:center; margin-top:12px;">
+      📲 Als App auf Handy, PC oder Tablet installieren
+    </button>
   </div>
 </div>
 
@@ -496,7 +566,8 @@
         <div class="brand-sub">Angebote (Artikelgruppen), Rechnungen, DIN-5008 Briefkopf &amp; E-Rechnung</div>
       </div>
     </div>
-    <div style="display:flex; gap:8px; align-items:center;">
+    <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+      <button type="button" class="btn btn-success btn-sm" id="btn-install-app" onclick="handleInstallButtonClick()">📲 App installieren</button>
       <button class="btn btn-secondary btn-sm" onclick="reloadAllData()">🔄 Aktualisieren</button>
       <button class="btn btn-danger btn-sm" onclick="logout()">Abmelden</button>
     </div>
@@ -1479,6 +1550,136 @@
   const SUPABASE_ANON_KEY = 'sb_publishable_eDmqeJCM1M27LKgu7s3iNQ_WiAIe9hD';
 
   // =========================================================================
+  // PWA-UNTERSTÜTZUNG (MANIFEST, ICON, SERVICE WORKER & INSTALL-PROMPT)
+  // =========================================================================
+  let deferredInstallPrompt = null;
+  let swBlobUrl = null;
+
+  function buildAppIconSvgDataUri() {
+    const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+      <defs>
+        <linearGradient id="dkg" x1="0" y1="0" x2="1" y2="1">
+          <stop offset="0%" stop-color="#4f46e5"/>
+          <stop offset="100%" stop-color="#9333ea"/>
+        </linearGradient>
+      </defs>
+      <rect width="512" height="512" rx="112" fill="url(#dkg)"/>
+      <rect x="28" y="28" width="456" height="456" rx="92" fill="none" stroke="rgba(255,255,255,0.22)" stroke-width="6"/>
+      <text x="256" y="295" text-anchor="middle" fill="#ffffff" font-family="Arial,Helvetica,sans-serif" font-weight="900" font-size="168" letter-spacing="-6">DKC</text>
+      <text x="256" y="368" text-anchor="middle" fill="#e9d5ff" font-family="Arial,Helvetica,sans-serif" font-weight="700" font-size="38" letter-spacing="8">WARENWIRTSCHAFT</text>
+    </svg>`;
+    return 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svg);
+  }
+
+  function setupPwaManifestAndWorker() {
+    const iconUri = buildAppIconSvgDataUri();
+
+    let appleIcon = document.querySelector('link[rel="apple-touch-icon"]');
+    if (!appleIcon) {
+      appleIcon = document.createElement('link');
+      appleIcon.rel = 'apple-touch-icon';
+      document.head.appendChild(appleIcon);
+    }
+    appleIcon.href = iconUri;
+
+    let favIcon = document.querySelector('link[rel="icon"]');
+    if (!favIcon) {
+      favIcon = document.createElement('link');
+      favIcon.rel = 'icon';
+      document.head.appendChild(favIcon);
+    }
+    favIcon.href = iconUri;
+
+    const manifest = {
+      name: 'DK CUSTOM – Warenwirtschaft',
+      short_name: 'DK CUSTOM',
+      description: 'Warenwirtschaft, Angebote, Rechnungen & Schriftverkehr',
+      start_url: window.location.href,
+      scope: './',
+      display: 'standalone',
+      background_color: '#0f172a',
+      theme_color: '#6366f1',
+      orientation: 'any',
+      icons: [
+        {
+          src: iconUri,
+          sizes: '192x192 512x512',
+          type: 'image/svg+xml',
+          purpose: 'any maskable'
+        }
+      ]
+    };
+
+    const manifestBlob = new Blob([JSON.stringify(manifest)], { type: 'application/manifest+json' });
+    const manifestUrl = URL.createObjectURL(manifestBlob);
+    let manifestLink = document.querySelector('link[rel="manifest"]');
+    if (!manifestLink) {
+      manifestLink = document.createElement('link');
+      manifestLink.rel = 'manifest';
+      document.head.appendChild(manifestLink);
+    }
+    manifestLink.href = manifestUrl;
+
+    if ('serviceWorker' in navigator && (window.location.protocol === 'https:' || window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1')) {
+      const swCode = `
+        self.addEventListener('install', () => self.skipWaiting());
+        self.addEventListener('activate', (event) => event.waitUntil(self.clients.claim()));
+        self.addEventListener('fetch', () => {});
+      `;
+      swBlobUrl = URL.createObjectURL(new Blob([swCode], { type: 'application/javascript' }));
+      navigator.serviceWorker.register(swBlobUrl).catch(() => {});
+    }
+  }
+
+  window.addEventListener('beforeinstallprompt', (e) => {
+    e.preventDefault();
+    deferredInstallPrompt = e;
+    const btn = document.getElementById('btn-install-app');
+    if (btn) btn.textContent = '📲 App jetzt installieren';
+    const nativeBox = document.getElementById('pwa-native-action');
+    if (nativeBox) nativeBox.style.display = 'block';
+  });
+
+  window.addEventListener('appinstalled', () => {
+    deferredInstallPrompt = null;
+    closeInstallModal();
+    showToast('✅ DK CUSTOM App wurde installiert!');
+  });
+
+  function openInstallModal() {
+    const nativeBox = document.getElementById('pwa-native-action');
+    if (nativeBox) nativeBox.style.display = deferredInstallPrompt ? 'block' : 'none';
+    document.getElementById('pwa-install-modal').classList.add('open');
+  }
+
+  function closeInstallModal() {
+    document.getElementById('pwa-install-modal').classList.remove('open');
+  }
+
+  async function triggerNativeInstall() {
+    if (!deferredInstallPrompt) {
+      openInstallModal();
+      return;
+    }
+    const promptEvent = deferredInstallPrompt;
+    promptEvent.prompt();
+    const { outcome } = await promptEvent.userChoice;
+    deferredInstallPrompt = null;
+    const nativeBox = document.getElementById('pwa-native-action');
+    if (nativeBox) nativeBox.style.display = 'none';
+    closeInstallModal();
+    if (outcome === 'accepted') {
+      showToast('✅ Installation gestartet!');
+    }
+  }
+
+  function handleInstallButtonClick() {
+    if (deferredInstallPrompt) {
+      triggerNativeInstall();
+    } else {
+      openInstallModal();
+    }
+  }
 
   let sb = null;
   let kundenListe = [];
@@ -1674,6 +1875,7 @@
   }
 
   window.addEventListener('DOMContentLoaded', async () => {
+    setupPwaManifestAndWorker();
     applyLogoToUI();
     sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
     const { data: { session } } = await sb.auth.getSession();
