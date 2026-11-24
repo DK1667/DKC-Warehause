@@ -423,6 +423,34 @@
       display: none;
     }
 
+    /* Vermietkalender */
+    .cal-grid { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 4px; }
+    .cal-head { text-align: center; font-size: 0.78rem; color: var(--muted); font-weight: 700; padding: 4px 0; }
+    .cal-day { background: var(--surface-2); border: 1px solid var(--border); border-radius: 8px; min-height: 104px; padding: 4px 5px; cursor: pointer; overflow: hidden; }
+    .cal-day:hover { border-color: var(--primary); }
+    .cal-empty { background: transparent; border: none; cursor: default; }
+    .cal-day.today { border-color: #a5b4fc; box-shadow: inset 0 0 0 1px #a5b4fc; }
+    .cal-day.selected { background: rgba(99,102,241,0.18); }
+    .cal-day.over { border-color: var(--danger); }
+    .cal-num { font-size: 0.78rem; font-weight: 700; color: var(--muted); display: flex; justify-content: space-between; }
+    .cal-chip { font-size: 0.7rem; line-height: 1.2; background: rgba(15,23,42,0.6); border-left: 3px solid var(--primary); border-radius: 4px; padding: 2px 4px; margin-top: 3px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .cal-chip small { display: block; color: var(--muted); font-size: 0.66rem; overflow: hidden; text-overflow: ellipsis; }
+    .cal-more { font-size: 0.68rem; color: #a5b4fc; margin-top: 3px; }
+    @media (max-width: 700px) { .cal-day { min-height: 64px; } .cal-chip small { display: none; } }
+    .pill-vermietet { background: rgba(99,102,241,0.2); color: #a5b4fc; }
+    .pill-zurueck { background: rgba(148,163,184,0.2); color: #cbd5e1; }
+    /* Packliste (Druck) */
+    .pack-doc { width: 210mm; background: #fff; color: #000; font-family: Arial, Helvetica, sans-serif; font-size: 10pt; }
+    .pack-outer { width: 100%; border-collapse: collapse; }
+    .pack-outer > thead td, .pack-outer > tfoot td { padding: 0; border: none; }
+    .pack-body { padding: 0 18mm 0 20mm !important; }
+    .pack-items { width: 100%; border-collapse: collapse; margin-top: 8mm; }
+    .pack-items th { text-align: left; font-size: 8.5pt; color: #334155; border-bottom: 1.5px solid #7e22ce; padding: 3px 4px; background: transparent; text-transform: none; letter-spacing: 0; }
+    .pack-items td { border-bottom: 1px solid #cbd5e1; padding: 6px 4px; vertical-align: middle; }
+    .pack-items tr { page-break-inside: avoid; break-inside: avoid; }
+    .pack-items tr:hover td { background: transparent; }
+    .pack-grp td { background: #f1f0fd; font-weight: 700; color: #312e81; font-size: 9pt; padding: 4px 6px; border-bottom: 1px solid #e9d5ff; }
+    .pack-box { display: inline-block; width: 4.5mm; height: 4.5mm; border: 1.3px solid #000; vertical-align: middle; }
     /* PWA Install Modal */
     .pwa-modal-backdrop {
       display: none;
@@ -533,6 +561,16 @@
   </div>
 </div>
 
+<!-- AUFTRAG-MODAL -->
+<div id="auftrag-modal" class="pwa-modal-backdrop" onclick="if(event.target===this) closeAuftragModal()">
+  <div class="pwa-modal-card" style="max-width:640px; max-height:90vh; overflow-y:auto;" id="auftrag-modal-content"></div>
+</div>
+
+<!-- PACKLISTE-MODAL -->
+<div id="packliste-modal" class="pwa-modal-backdrop" onclick="if(event.target===this) closePackliste()">
+  <div class="pwa-modal-card" style="max-width:960px; max-height:92vh; overflow-y:auto;" id="packliste-modal-content"></div>
+</div>
+
 <!-- LOGIN -->
 <div id="login-screen">
   <div class="login-card">
@@ -579,6 +617,7 @@
     <button onclick="showTab('tab-kunden', this)">👥 Kunden &amp; KingBill-Import</button>
     <button onclick="showTab('tab-artikel', this)">📦 Artikel &amp; 3 Preislisten</button>
     <button onclick="showTab('tab-miete', this)">📅 Vermietung &amp; Staffel</button>
+    <button onclick="showTab('tab-kalender', this)">📆 Vermietkalender</button>
     <button onclick="showTab('tab-textbausteine', this)">✍️ Textbausteine</button>
     <button onclick="showTab('tab-statistik', this)">📊 Umsatz-Statistik</button>
     <button onclick="showTab('tab-backup', this)">💾 USB-Backup</button>
@@ -1309,6 +1348,40 @@
     </section>
 
     <!-- =================================================================== -->
+    <!-- TAB: VERMIETKALENDER                                                -->
+    <!-- =================================================================== -->
+    <section id="tab-kalender" class="section">
+      <div class="card">
+        <div class="card-header">
+          <h2>📆 Vermietkalender</h2>
+          <div style="display:flex; gap:8px; flex-wrap:wrap; align-items:center;">
+            <button class="btn btn-secondary btn-sm" onclick="calShift(-1)">◀</button>
+            <strong id="kal-titel" style="min-width:150px; text-align:center;"></strong>
+            <button class="btn btn-secondary btn-sm" onclick="calShift(1)">▶</button>
+            <button class="btn btn-secondary btn-sm" onclick="calToday()">Heute</button>
+            <button class="btn btn-secondary btn-sm" onclick="exportKalenderIcs()">📅 Als .ics exportieren</button>
+          </div>
+        </div>
+        <p style="margin:0 0 12px 0; font-size:0.84rem; color:var(--muted);">
+          Zeigt alle Reservierungen und Vermietungen. Bestätigte Angebote tragen ihre Mietartikel hier automatisch ein. Rot umrandete Tage sind überbucht.
+        </p>
+        <div class="grid-2" style="margin-bottom:12px;">
+          <div class="form-group" style="margin-bottom:0;">
+            <label>Artikel filtern</label>
+            <select id="kal-filter-artikel" onchange="renderKalender()"><option value="">Alle Artikel</option></select>
+          </div>
+          <div class="form-group" style="margin-bottom:0; justify-content:flex-end;">
+            <label style="display:inline-flex; align-items:center; gap:8px; cursor:pointer;">
+              <input type="checkbox" id="kal-zeige-zurueck" onchange="renderKalender()" /> Zurückgegebene anzeigen
+            </label>
+          </div>
+        </div>
+        <div id="kal-grid" class="cal-grid"></div>
+        <div id="kal-detail" style="margin-top:16px;"></div>
+      </div>
+    </section>
+
+    <!-- =================================================================== -->
     <!-- TAB 5: STANDARD-TEXTBAUSTEINE                                       -->
     <!-- =================================================================== -->
     <section id="tab-textbausteine" class="section">
@@ -1938,6 +2011,7 @@
     ]);
     initStatistikJahre();
     renderStatistik();
+    renderKalender();
   }
 
   function showTab(tabId, btn) {
@@ -1946,6 +2020,7 @@
     document.getElementById(tabId).classList.add('active');
     btn.classList.add('active');
     if (tabId === 'tab-statistik') renderStatistik();
+    if (tabId === 'tab-kalender') renderKalender();
   }
 
   // =========================================================================
@@ -3395,7 +3470,7 @@
     const nurGruppenpreise = preisanzeige === 'nur_gruppe';
     const docRabatt = Number(belegObj.rabatt_prozent) || 0;
     const personFullName = `${kundeObj.anrede || ''} ${kundeObj.vorname || ''} ${kundeObj.nachname || ''}`.trim();
-    const docTypeLabel = isSchreiben ? 'Schreiben' : isAngebot ? 'Angebot' : 'Rechnung';
+    const docTypeLabel = belegObj._titel || (isSchreiben ? 'Schreiben' : isAngebot ? 'Angebot' : 'Rechnung');
 
     // Unsichtbare Mess-Bühne mit exakt denselben A4-Innenmaßen (172mm Breite), damit nichts zoom-verfälscht wird
     const sandbox = document.createElement('div');
@@ -3814,7 +3889,7 @@
 
     const kundeSnapshot = {
       ...baseKunde,
-      ...(isBelegAusgeblendet(belegeListe.find(x => x.id === document.getElementById('beleg-id').value)) ? { _ausgeblendet: true } : {}),
+      ...preservedBelegMeta(belegeListe.find(x => x.id === document.getElementById('beleg-id').value)),
       _referenz: document.getElementById('beleg-referenz').value.trim(),
       _ansprechpartner: document.getElementById('beleg-ansprechpartner').value.trim(),
       _brieftext: replaceBelegPlaceholders(document.getElementById('beleg-brieftext').value, {
@@ -4019,6 +4094,7 @@
 
         const hidden = isBelegAusgeblendet(b);
         const locked = isBelegFestgeschrieben(b);
+        const confirmed = isAngebotBestaetigt(b);
         const tr = document.createElement('tr');
         if (hidden) tr.style.opacity = '0.55';
         tr.innerHTML = `
@@ -4037,6 +4113,9 @@
             ${isRechnung ? `<button class="btn btn-success btn-sm" onclick="downloadZugferdPdf('${b.id}')">⚡ E-Rechnung (ZUGFeRD)</button>` : ''}
             ${isAngebot ? `<button class="btn btn-warning btn-sm" onclick="convertAngebotToRechnung('${b.id}')">→ Rechnung</button>` : ''}
             ${isAngebot ? `<button class="btn btn-secondary btn-sm" onclick="toggleBelegAusgeblendet('${b.id}')">${hidden ? '👁️ Einblenden' : '🙈 Ausblenden'}</button>` : ''}
+            ${isAngebot ? (confirmed
+              ? `<button class="btn btn-success btn-sm" onclick="openAuftragModal('${b.id}')">📋 Auftrag</button>`
+              : `<button class="btn btn-success btn-sm" onclick="bestaetigeAngebot('${b.id}')">✔ Bestätigen</button>`) : ''}
             ${isRechnung && b.status === 'offen' ? `<button class="btn btn-secondary btn-sm" onclick="markBelegBezahlt('${b.id}')">✓ Bezahlt</button>` : ''}
             ${isRechnung && !locked ? `<button class="btn btn-secondary btn-sm" onclick="festschreibenBeleg('${b.id}')">🔒 Festschreiben</button>` : ''}
           </td>
@@ -4051,6 +4130,7 @@
     if (isBelegFestgeschrieben(b)) {
       return alert(`Rechnung ${b.belegnummer} ist festgeschrieben und kann nicht mehr geändert werden.\nKorrekturen bitte per Stornorechnung.`);
     }
+    if (isAngebotBestaetigt(b)) showToast('ℹ️ Angebot ist bestätigt – nach Änderungen im „Auftrag“ den Kalender aktualisieren');
     openBelegEditor(b.beleg_typ, b);
   }
 
@@ -4098,6 +4178,9 @@
         _ausgeblendet: undefined,
         _festgeschrieben: undefined,
         _festgeschrieben_am: undefined,
+        _packliste: undefined,
+        _bestaetigt_am: undefined,
+        _ab: undefined,
         _referenz: ag.belegnummer,
         _leistungsdatum_bis: lBis
       },
@@ -4181,8 +4264,9 @@
     const a = artikelListe.find(x => x.id === artikelId);
     if (!a || !von || !bis || bis < von) return null;
     const bestand = Number(a.bestand) || 0;
+    const ign = ignoreId instanceof Set ? ignoreId : new Set([ignoreId]);
     const relevant = vermietungenListe.filter(m =>
-      m.artikel_id === artikelId && m.id !== ignoreId && m.status !== 'zurueck' &&
+      m.artikel_id === artikelId && !ign.has(m.id) && m.status !== 'zurueck' &&
       m.startdatum <= bis && m.enddatum >= von);
 
     let minFrei = bestand, kritischerTag = von, tagZaehler = 0;
@@ -5008,6 +5092,464 @@ ${prop('ConformanceLevel', 'The conformance level of the embedded Factur-X data'
       console.error('ZUGFeRD-Export fehlgeschlagen:', err);
       alert('E-Rechnung konnte nicht erstellt werden: ' + (err && err.message ? err.message : err));
     }
+  }
+
+  // =========================================================================
+  // AUFTRAG: Angebot bestätigen, Vermietkalender, Auftragsbestätigung, Packliste
+  // Alle Zusatzdaten liegen im JSON-Feld kunde_snapshot (keine SQL-Änderung nötig).
+  // =========================================================================
+  const AB_DEFAULT_BRIEF = 'Sehr geehrte Damen und Herren,\n\nvielen Dank für Ihren Auftrag. Hiermit bestätigen wir die nachstehenden Leistungen und Lieferungen auf Grundlage unseres Angebots [Nummer] vom [Belegdatum].';
+  const AB_DEFAULT_SCHLUSS = 'Bitte prüfen Sie die Angaben und melden Sie sich bei Abweichungen. Wir freuen uns auf die Zusammenarbeit.';
+
+  function preservedBelegMeta(b) {
+    const s = (b && b.kunde_snapshot) || {};
+    const o = {};
+    ['_ausgeblendet', '_packliste', '_bestaetigt_am', '_ab'].forEach(key => { if (s[key] !== undefined) o[key] = s[key]; });
+    return o;
+  }
+  function isAngebotBestaetigt(b) {
+    return Boolean(b && b.beleg_typ === 'angebot' && b.kunde_snapshot && b.kunde_snapshot._bestaetigt_am);
+  }
+  function auftragMarker(b) { return `[${b.belegnummer}]`; }
+  function angebotZeitraum(b) {
+    const von = b.leistungsdatum_von || b.belegdatum;
+    const bis = b.leistungsdatum_bis || (b.kunde_snapshot && b.kunde_snapshot._leistungsdatum_bis) || von;
+    return { von, bis: bis < von ? von : bis };
+  }
+  // Mietartikel aus dem Katalog (gleiche Artikel werden zusammengefasst)
+  function angebotMietZeilen(b) {
+    const sums = new Map();
+    positionenListe.filter(p => p.beleg_id === b.id && p.kategorie === 'miete' && p.artikel_id).forEach(p => {
+      const m = p.einheit === 'Pauschale' ? 1 : Math.max(1, Math.ceil(Number(p.menge) || 1));
+      const cur = sums.get(p.artikel_id) || { artikel_id: p.artikel_id, menge: 0, preis: Number(p.einzelpreis_netto) || 0, faktor: Number(p.mietfaktor) || 1 };
+      cur.menge += m;
+      sums.set(p.artikel_id, cur);
+    });
+    return [...sums.values()];
+  }
+  function getBelegKunde(b) {
+    return (b.kunde_snapshot && b.kunde_snapshot.kundennummer ? b.kunde_snapshot : kundenListe.find(x => x.id === b.kunde_id)) || {};
+  }
+  function kundeKurz(k) {
+    return k ? (k.firma || `${k.vorname || ''} ${k.nachname || ''}`.trim() || k.kundennummer || '?') : '?';
+  }
+
+  async function bestaetigeAngebot(id) {
+    closeAuftragModal();
+    const b = belegeListe.find(x => x.id === id);
+    if (!b || b.beleg_typ !== 'angebot') return;
+    const wasConfirmed = isAngebotBestaetigt(b);
+    const { von, bis } = angebotZeitraum(b);
+    if (!von) return alert('Bitte im Angebot zuerst den Leistungszeitraum (Von/Bis) eintragen.');
+    const zeilen = angebotMietZeilen(b);
+    const marker = auftragMarker(b);
+    const eigene = vermietungenListe.filter(m => m.notizen && m.notizen.startsWith(marker));
+    const eigeneIds = new Set(eigene.map(m => m.id));
+    const behalten = new Set(eigene.filter(m => m.status !== 'reserviert').map(m => m.artikel_id));
+
+    const probleme = [];
+    zeilen.forEach(z => {
+      const r = pruefeMieteVerfuegbarkeit(z.artikel_id, von, bis, z.menge, eigeneIds);
+      if (r && !r.ok) probleme.push(`• ${r.name}: ${mieteKonfliktText(r).split('\n')[0]}`);
+    });
+    const msg = (wasConfirmed ? `Kalender für Angebot ${b.belegnummer} aktualisieren?` : `Angebot ${b.belegnummer} jetzt bestätigen?`) +
+      `\n\nZeitraum: ${formatLeistungszeitraumText(von, bis)}` +
+      `\nIm Vermietkalender: ${zeilen.length} Mietartikel` + (zeilen.length ? '' : ' (keine Katalog-Mietartikel im Angebot)') +
+      (probleme.length ? `\n\n⚠️ Bestand reicht nicht:\n${probleme.join('\n')}\n\nTrotzdem fortfahren?` : '');
+    if (!confirm(msg)) return;
+
+    const alte = eigene.filter(m => m.status === 'reserviert').map(m => m.id);
+    if (alte.length) {
+      const { error } = await sb.from('vermietungen').delete().in('id', alte);
+      if (error) return alert('Fehler: ' + error.message);
+    }
+    const rows = zeilen.filter(z => !behalten.has(z.artikel_id)).map(z => ({
+      artikel_id: z.artikel_id, kunde_id: b.kunde_id, startdatum: von, enddatum: bis,
+      menge: z.menge, mietfaktor: z.faktor, tagespreis_netto: z.preis, status: 'reserviert',
+      notizen: `${marker} ${b.einleitungstext || ''}`.trim()
+    }));
+    if (rows.length) {
+      const { error } = await sb.from('vermietungen').insert(rows);
+      if (error) return alert('Fehler beim Eintragen in den Kalender: ' + error.message);
+    }
+    const snap = { ...(b.kunde_snapshot || {}), _bestaetigt_am: (b.kunde_snapshot && b.kunde_snapshot._bestaetigt_am) || new Date().toISOString().slice(0, 10) };
+    const { error: e2 } = await sb.from('belege').update({ status: 'angenommen', kunde_snapshot: snap }).eq('id', id);
+    if (e2) return alert('Fehler: ' + e2.message);
+    await reloadAllData();
+    showToast(wasConfirmed ? '📆 Kalender aktualisiert' : '✅ Angebot bestätigt & im Kalender eingetragen');
+    if (!wasConfirmed && confirm('Auftragsbestätigung jetzt drucken / als PDF speichern?')) printAuftragsbestaetigung(id, false);
+  }
+
+  async function bestaetigungZuruecknehmen(id) {
+    const b = belegeListe.find(x => x.id === id);
+    if (!b) return;
+    if (!confirm(`Bestätigung von ${b.belegnummer} zurücknehmen?\n\nReservierte Kalender-Einträge dieses Angebots werden gelöscht (bereits ausgegebene bleiben bestehen).`)) return;
+    const marker = auftragMarker(b);
+    const alte = vermietungenListe.filter(m => m.notizen && m.notizen.startsWith(marker) && m.status === 'reserviert').map(m => m.id);
+    if (alte.length) {
+      const { error } = await sb.from('vermietungen').delete().in('id', alte);
+      if (error) return alert('Fehler: ' + error.message);
+    }
+    const snap = { ...(b.kunde_snapshot || {}) };
+    delete snap._bestaetigt_am;
+    const { error: e2 } = await sb.from('belege').update({ status: 'offen', kunde_snapshot: snap }).eq('id', id);
+    if (e2) return alert('Fehler: ' + e2.message);
+    closeAuftragModal();
+    showToast('↩ Bestätigung zurückgenommen');
+    await reloadAllData();
+  }
+
+  // ---------- Auftrags-Fenster ----------
+  function closeAuftragModal() { document.getElementById('auftrag-modal').classList.remove('open'); }
+
+  function openAuftragModal(id) {
+    const b = belegeListe.find(x => x.id === id);
+    if (!b) return;
+    const k = getBelegKunde(b);
+    const ab = (b.kunde_snapshot && b.kunde_snapshot._ab) || {};
+    const { von, bis } = angebotZeitraum(b);
+    const marker = auftragMarker(b);
+    const anzahl = vermietungenListe.filter(m => m.notizen && m.notizen.startsWith(marker)).length;
+    const pl = b.kunde_snapshot && b.kunde_snapshot._packliste;
+    const plAnz = pl && pl.items ? pl.items.filter(i => i.mitnehmen).length : 0;
+    document.getElementById('auftrag-modal-content').innerHTML = `
+      <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
+        <h3 style="margin:0;">📋 Auftrag ${escHtml(b.belegnummer)}</h3>
+        <button type="button" class="btn btn-secondary btn-sm" onclick="closeAuftragModal()">✕</button>
+      </div>
+      <div class="pwa-guide-box">
+        <strong>${escHtml(kundeKurz(k))}</strong>
+        ${escHtml(b.einleitungstext || '')}<br>
+        Zeitraum: ${escHtml(formatLeistungszeitraumText(von, bis))} · bestätigt am ${formatDateDE(b.kunde_snapshot._bestaetigt_am)}<br>
+        Kalender-Einträge: ${anzahl} · Packliste: ${plAnz ? plAnz + ' Positionen gespeichert' : 'noch nicht angelegt'}
+      </div>
+      <div class="form-group">
+        <label>Anschreiben der Auftragsbestätigung</label>
+        <textarea id="ab-brief" rows="4">${escHtml(ab.brief ?? AB_DEFAULT_BRIEF)}</textarea>
+      </div>
+      <div class="form-group">
+        <label>Schlusstext (Grußformel wird automatisch ergänzt)</label>
+        <textarea id="ab-schluss" rows="2">${escHtml(ab.schluss ?? AB_DEFAULT_SCHLUSS)}</textarea>
+      </div>
+      <div style="display:flex; gap:8px; flex-wrap:wrap;">
+        <button type="button" class="btn" onclick="printAuftragsbestaetigung('${b.id}', true)">🖨️ Auftragsbestätigung drucken / PDF</button>
+        <button type="button" class="btn btn-success" onclick="openPackliste('${b.id}')">📦 Packliste</button>
+        <button type="button" class="btn btn-secondary" onclick="bestaetigeAngebot('${b.id}')">📆 Kalender aktualisieren</button>
+        <button type="button" class="btn btn-danger" onclick="bestaetigungZuruecknehmen('${b.id}')">↩ Bestätigung zurücknehmen</button>
+      </div>`;
+    document.getElementById('auftrag-modal').classList.add('open');
+  }
+
+  async function printAuftragsbestaetigung(id, fromModal) {
+    const b = belegeListe.find(x => x.id === id);
+    if (!b) return;
+    const saved = (b.kunde_snapshot && b.kunde_snapshot._ab) || {};
+    const briefEl = document.getElementById('ab-brief');
+    const schlussEl = document.getElementById('ab-schluss');
+    const brief = fromModal && briefEl ? briefEl.value : (saved.brief ?? AB_DEFAULT_BRIEF);
+    const schluss = fromModal && schlussEl ? schlussEl.value : (saved.schluss ?? AB_DEFAULT_SCHLUSS);
+    if (fromModal && (brief !== saved.brief || schluss !== saved.schluss)) {
+      const snap = { ...(b.kunde_snapshot || {}), _ab: { brief, schluss } };
+      const { error } = await sb.from('belege').update({ kunde_snapshot: snap }).eq('id', id);
+      if (!error) b.kunde_snapshot = snap;
+    }
+    const pos = positionenListe.filter(p => p.beleg_id === b.id);
+    const abObj = {
+      ...b,
+      _titel: 'Auftragsbestätigung',
+      einleitungstext: `Auftragsbestätigung: ${b.einleitungstext || 'Angebot ' + b.belegnummer}`,
+      schlusstext: schluss
+    };
+    const kObj = { ...getBelegKunde(b), _brieftext: brief };
+    const printArea = document.getElementById('print-area');
+    printArea.innerHTML = '<div class="a4-sheets-wrapper" id="print-sheets-wrapper"></div>';
+    renderPaginatedBelegPages(document.getElementById('print-sheets-wrapper'), abObj, kObj, pos);
+    setTimeout(() => window.print(), 60);
+  }
+
+  // ---------- Packliste ----------
+  let packState = { belegId: '', items: [] };
+
+  function newPackItem(o = {}) {
+    return { id: 'pk_' + Math.random().toString(36).slice(2, 10), quelle: 'extra', pos_id: null, gruppe: '',
+      bezeichnung: '', menge: 1, einheit: 'Stk.', mitnehmen: true, notiz: '', ...o };
+  }
+  function packItemsFromAngebot(b, existing = []) {
+    const have = new Set(existing.filter(i => i.pos_id).map(i => i.pos_id));
+    return positionenListe
+      .filter(p => p.beleg_id === b.id && !have.has(p.id))
+      .sort((a, c) => a.position_nr - c.position_nr)
+      .map(p => newPackItem({
+        quelle: 'angebot', pos_id: p.id, gruppe: p.gruppe || '', bezeichnung: p.bezeichnung || '',
+        menge: p.einheit === 'Pauschale' ? 1 : (Number(p.menge) || 1), einheit: p.einheit || 'Stk.',
+        mitnehmen: p.kategorie !== 'dienstleistung'
+      }));
+  }
+
+  function openPackliste(id) {
+    closeAuftragModal();
+    const b = belegeListe.find(x => x.id === id);
+    if (!b) return;
+    const saved = b.kunde_snapshot && b.kunde_snapshot._packliste && b.kunde_snapshot._packliste.items;
+    packState = { belegId: id, items: saved ? saved.map(i => ({ ...i })) : packItemsFromAngebot(b) };
+    renderPackliste();
+    document.getElementById('packliste-modal').classList.add('open');
+  }
+  function closePackliste() { document.getElementById('packliste-modal').classList.remove('open'); }
+
+  function renderPackliste() {
+    const b = belegeListe.find(x => x.id === packState.belegId);
+    if (!b) return;
+    const k = getBelegKunde(b);
+    const { von, bis } = angebotZeitraum(b);
+    const rows = packState.items.map(i => `
+      <tr style="opacity:${i.mitnehmen ? 1 : 0.5};">
+        <td style="width:44px;"><input type="checkbox" ${i.mitnehmen ? 'checked' : ''} title="Auf die Packliste" onchange="packSet('${i.id}','mitnehmen',this.checked,true)" /></td>
+        <td style="width:86px;"><input type="number" min="0" step="0.01" value="${i.menge}" oninput="packSet('${i.id}','menge',parseFloat(this.value)||0)" /></td>
+        <td style="width:70px;"><input type="text" value="${escHtml(i.einheit)}" oninput="packSet('${i.id}','einheit',this.value)" /></td>
+        <td><input type="text" placeholder="Bezeichnung" value="${escHtml(i.bezeichnung)}" oninput="packSet('${i.id}','bezeichnung',this.value)" />
+            ${i.quelle === 'extra' ? '<span class="pill pill-miete" style="margin-top:3px;">zusätzlich</span>' : (i.gruppe ? `<small style="color:var(--muted);">${escHtml(i.gruppe)}</small>` : '')}</td>
+        <td style="width:210px;"><input type="text" placeholder="Notiz (z. B. Kabel, Akku)" value="${escHtml(i.notiz)}" oninput="packSet('${i.id}','notiz',this.value)" /></td>
+        <td style="width:44px;"><button type="button" class="btn btn-danger btn-sm" onclick="packRemove('${i.id}')">✕</button></td>
+      </tr>`).join('');
+    const katalogOpts = artikelListe.map(a => `<option value="${a.id}">${escHtml(a.bezeichnung)}</option>`).join('');
+    document.getElementById('packliste-modal-content').innerHTML = `
+      <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
+        <h3 style="margin:0;">📦 Packliste ${escHtml(b.belegnummer)} – ${escHtml(kundeKurz(k))}</h3>
+        <button type="button" class="btn btn-secondary btn-sm" onclick="closePackliste()">✕</button>
+      </div>
+      <p style="margin:0 0 10px 0; color:var(--muted); font-size:0.84rem;">
+        Zeitraum: ${escHtml(formatLeistungszeitraumText(von, bis))}. Haken = kommt auf die Packliste. Dienstleistungen sind vorab abgewählt.
+      </p>
+      <div class="table-wrap">
+        <table><thead><tr><th>Liste</th><th>Menge</th><th>Einheit</th><th>Bezeichnung</th><th>Notiz</th><th></th></tr></thead>
+        <tbody>${rows || '<tr><td colspan="6" style="color:var(--muted);">Noch keine Positionen.</td></tr>'}</tbody></table>
+      </div>
+      <div style="display:flex; gap:8px; flex-wrap:wrap; align-items:center; margin:12px 0;">
+        <button type="button" class="btn btn-secondary btn-sm" onclick="packAddFree()">+ Freie Zeile</button>
+        <select id="pack-katalog" style="max-width:260px;"><option value="">-- Aus Katalog --</option>${katalogOpts}</select>
+        <button type="button" class="btn btn-secondary btn-sm" onclick="packAddCatalog()">+ Katalog-Artikel</button>
+        <button type="button" class="btn btn-secondary btn-sm" onclick="packReload()">↺ Neue Angebots-Positionen übernehmen</button>
+      </div>
+      <div style="display:flex; gap:8px; flex-wrap:wrap; border-top:1px solid var(--border); padding-top:12px;">
+        <button type="button" class="btn btn-success" onclick="packSave()">💾 Speichern</button>
+        <button type="button" class="btn" onclick="printPackliste()">🖨️ Packliste drucken / PDF</button>
+        <button type="button" class="btn btn-secondary" onclick="closePackliste()">Schließen</button>
+      </div>`;
+  }
+
+  function packSet(id, field, value, rerender = false) {
+    const it = packState.items.find(x => x.id === id);
+    if (!it) return;
+    it[field] = value;
+    if (rerender) renderPackliste();
+  }
+  function packRemove(id) { packState.items = packState.items.filter(x => x.id !== id); renderPackliste(); }
+  function packAddFree() { packState.items.push(newPackItem()); renderPackliste(); }
+  function packAddCatalog() {
+    const aId = document.getElementById('pack-katalog').value;
+    const a = artikelListe.find(x => x.id === aId);
+    if (!a) return alert('Bitte zuerst einen Artikel auswählen.');
+    packState.items.push(newPackItem({ bezeichnung: a.bezeichnung, einheit: a.einheit || 'Stk.' }));
+    renderPackliste();
+  }
+  function packReload() {
+    const b = belegeListe.find(x => x.id === packState.belegId);
+    if (!b) return;
+    const neu = packItemsFromAngebot(b, packState.items);
+    if (!neu.length) return showToast('ℹ️ Keine neuen Positionen im Angebot');
+    packState.items = [...packState.items.filter(i => i.quelle !== 'extra'), ...neu, ...packState.items.filter(i => i.quelle === 'extra')];
+    renderPackliste();
+    showToast(`↺ ${neu.length} neue Position(en) übernommen`);
+  }
+  async function packSave() {
+    const b = belegeListe.find(x => x.id === packState.belegId);
+    if (!b) return;
+    const snap = { ...(b.kunde_snapshot || {}), _packliste: { items: packState.items, gespeichert_am: new Date().toISOString() } };
+    const { error } = await sb.from('belege').update({ kunde_snapshot: snap }).eq('id', b.id);
+    if (error) return alert('Fehler: ' + error.message);
+    b.kunde_snapshot = snap;
+    showToast('✅ Packliste gespeichert');
+  }
+
+  function printPackliste() {
+    const b = belegeListe.find(x => x.id === packState.belegId);
+    if (!b) return;
+    const k = getBelegKunde(b);
+    const { von, bis } = angebotZeitraum(b);
+    const items = packState.items.filter(i => i.mitnehmen && String(i.bezeichnung || '').trim());
+    const ordered = [...items.filter(i => i.quelle !== 'extra'), ...items.filter(i => i.quelle === 'extra')];
+    let lastGrp = null;
+    const body = ordered.map(i => {
+      const grp = i.quelle === 'extra' ? 'Zusätzlich / Sonstiges' : (i.gruppe || '');
+      let head = '';
+      if (grp && grp !== lastGrp) head = `<tr class="pack-grp"><td colspan="5">${escHtml(grp)}</td></tr>`;
+      lastGrp = grp;
+      return `${head}<tr>
+        <td style="width:9mm; text-align:center;"><span class="pack-box"></span></td>
+        <td style="width:20mm; white-space:nowrap; font-weight:700;">${formatNumberDE(i.menge)} ${escHtml(i.einheit)}</td>
+        <td>${escHtml(i.bezeichnung)}</td>
+        <td style="width:38mm; font-size:8.5pt; color:#475569;">${escHtml(i.notiz || '')}</td>
+        <td style="width:14mm; text-align:center;"><span class="pack-box"></span></td>
+      </tr>`;
+    }).join('');
+    const logo = getActiveLogoSrc();
+    const firma = firmenDaten.firmenname || 'DK CUSTOM';
+    const meta = (l, v) => v ? `<tr><td style="padding:2px 10px 2px 0; color:#64748b;">${l}</td><td style="padding:2px 0; font-weight:600;">${escHtml(v)}</td></tr>` : '';
+    document.getElementById('print-area').innerHTML = `
+      <div class="pack-doc"><table class="pack-outer">
+        <thead><tr><td><div style="height:14mm;"></div></td></tr></thead>
+        <tfoot><tr><td><div style="height:14mm;"></div></td></tr></tfoot>
+        <tbody><tr><td class="pack-body">
+          <div style="display:flex; justify-content:space-between; align-items:flex-start; border-bottom:2px solid #7e22ce; padding-bottom:4mm;">
+            <div>
+              <div style="font-size:20pt; font-weight:700; color:#1e1b4b;">Packliste</div>
+              <div style="font-size:9pt; color:#475569; margin-top:2px;">${escHtml(firma)} • ${escHtml(firmenDaten.strasse || '')} • ${escHtml(firmenDaten.plz || '')} ${escHtml(firmenDaten.ort || '')}</div>
+            </div>
+            <img src="${logo}" alt="" style="max-height:18mm; max-width:60mm; object-fit:contain;" onerror="this.style.display='none'" />
+          </div>
+          <table style="margin-top:5mm; font-size:10pt; border-collapse:collapse;">
+            ${meta('Kunde:', kundeKurz(k))}
+            ${meta('Auftrag / Angebot:', b.belegnummer)}
+            ${meta('Projekt:', b.einleitungstext || '')}
+            ${meta('Zeitraum:', formatLeistungszeitraumText(von, bis))}
+            ${meta('Ansprechpartner:', (b.kunde_snapshot && b.kunde_snapshot._ansprechpartner) || '')}
+            ${meta('Gedruckt am:', formatDateDE(new Date().toISOString().slice(0, 10)))}
+          </table>
+          <table class="pack-items">
+            <thead><tr><th style="text-align:center;">Gepackt</th><th>Menge</th><th>Bezeichnung</th><th>Notiz</th><th style="text-align:center;">Zurück</th></tr></thead>
+            <tbody>${body || '<tr><td colspan="5" style="padding:10px;">Keine Positionen ausgewählt.</td></tr>'}</tbody>
+          </table>
+          <div style="display:flex; gap:12mm; margin-top:14mm; font-size:9pt; color:#475569; page-break-inside:avoid;">
+            <div style="flex:1; border-top:1px solid #000; padding-top:2px;">Gepackt von / Datum</div>
+            <div style="flex:1; border-top:1px solid #000; padding-top:2px;">Kontrolliert von / Datum</div>
+            <div style="flex:1; border-top:1px solid #000; padding-top:2px;">Rückgabe geprüft / Datum</div>
+          </div>
+        </td></tr></tbody>
+      </table></div>`;
+    setTimeout(() => window.print(), 80);
+  }
+
+  // ---------- Vermietkalender ----------
+  let calYear = new Date().getFullYear(), calMonth = new Date().getMonth(), calSelected = '';
+
+  function isoDateLocal(d) {
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  }
+  function calShift(dm) {
+    calMonth += dm;
+    if (calMonth < 0) { calMonth = 11; calYear--; }
+    if (calMonth > 11) { calMonth = 0; calYear++; }
+    renderKalender();
+  }
+  function calToday() {
+    const n = new Date();
+    calYear = n.getFullYear(); calMonth = n.getMonth(); calSelected = isoDateLocal(n);
+    renderKalender();
+  }
+  function calSelectDay(iso) { calSelected = iso; renderKalender(); }
+
+  function kalFiltered() {
+    const art = (document.getElementById('kal-filter-artikel') || {}).value || '';
+    const showRet = Boolean((document.getElementById('kal-zeige-zurueck') || {}).checked);
+    return vermietungenListe.filter(m => (!art || m.artikel_id === art) && (showRet || m.status !== 'zurueck'));
+  }
+  const KAL_FARBE = { reserviert: '#f59e0b', vermietet: '#6366f1', zurueck: '#64748b', abgerechnet: '#10b981' };
+
+  function renderKalender() {
+    const grid = document.getElementById('kal-grid');
+    if (!grid) return;
+    const sel = document.getElementById('kal-filter-artikel');
+    if (sel) {
+      const prev = sel.value;
+      sel.innerHTML = '<option value="">Alle Artikel</option>' +
+        artikelListe.filter(a => a.kategorie === 'miete').map(a => `<option value="${a.id}">${escHtml(a.bezeichnung)}</option>`).join('');
+      sel.value = prev;
+    }
+    document.getElementById('kal-titel').textContent = new Date(calYear, calMonth, 1).toLocaleDateString('de-DE', { month: 'long', year: 'numeric' });
+    const list = kalFiltered();
+    const lead = (new Date(calYear, calMonth, 1).getDay() + 6) % 7;
+    const days = new Date(calYear, calMonth + 1, 0).getDate();
+    const today = isoDateLocal(new Date());
+
+    let html = ['Mo', 'Di', 'Mi', 'Do', 'Fr', 'Sa', 'So'].map(d => `<div class="cal-head">${d}</div>`).join('');
+    for (let i = 0; i < lead; i++) html += '<div class="cal-day cal-empty"></div>';
+    for (let d = 1; d <= days; d++) {
+      const iso = `${calYear}-${String(calMonth + 1).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
+      const items = list.filter(m => m.startdatum <= iso && m.enddatum >= iso);
+      const perArt = {};
+      items.filter(m => m.status !== 'zurueck').forEach(m => { perArt[m.artikel_id] = (perArt[m.artikel_id] || 0) + (Number(m.menge) || 0); });
+      const over = Object.entries(perArt).some(([aid, sum]) => {
+        const a = artikelListe.find(x => x.id === aid);
+        return a && sum > (Number(a.bestand) || 0);
+      });
+      const chips = items.slice(0, 3).map(m => {
+        const a = artikelListe.find(x => x.id === m.artikel_id);
+        const k = kundenListe.find(x => x.id === m.kunde_id);
+        return `<div class="cal-chip" style="border-left-color:${KAL_FARBE[m.status] || '#6366f1'}" title="${escHtml(`${m.menge}× ${a ? a.bezeichnung : '?'} – ${kundeKurz(k)}`)}">${m.menge}× ${escHtml(a ? a.bezeichnung : '?')}<small>${escHtml(kundeKurz(k))}</small></div>`;
+      }).join('');
+      const more = items.length > 3 ? `<div class="cal-more">+${items.length - 3} weitere</div>` : '';
+      html += `<div class="cal-day${iso === today ? ' today' : ''}${iso === calSelected ? ' selected' : ''}${over ? ' over' : ''}" onclick="calSelectDay('${iso}')">
+        <div class="cal-num"><span>${d}</span>${over ? '<span title="Überbucht">⚠️</span>' : ''}</div>${chips}${more}</div>`;
+    }
+    grid.innerHTML = html;
+    renderKalenderDetail(list);
+  }
+
+  function renderKalenderDetail(list) {
+    const box = document.getElementById('kal-detail');
+    if (!box) return;
+    if (!calSelected) { box.innerHTML = '<div style="color:var(--muted); font-size:0.88rem;">Tag anklicken, um alle Einträge im Detail zu sehen.</div>'; return; }
+    const items = (list || kalFiltered()).filter(m => m.startdatum <= calSelected && m.enddatum >= calSelected);
+    const rows = items.map(m => {
+      const a = artikelListe.find(x => x.id === m.artikel_id);
+      const k = kundenListe.find(x => x.id === m.kunde_id);
+      const mk = /^\[([^\]]+)\]/.exec(m.notizen || '');
+      const offer = mk ? belegeListe.find(x => x.beleg_typ === 'angebot' && x.belegnummer === mk[1]) : null;
+      return `<tr>
+        <td><strong>${m.menge}× ${escHtml(a ? a.bezeichnung : '?')}</strong></td>
+        <td>${escHtml(kundeKurz(k))}</td>
+        <td>${formatDateDE(m.startdatum)} – ${formatDateDE(m.enddatum)}</td>
+        <td><span class="pill pill-${m.status}">${escHtml(String(m.status).toUpperCase())}</span></td>
+        <td><small style="color:var(--muted);">${escHtml(m.notizen || '')}</small></td>
+        <td style="white-space:nowrap;">
+          <button class="btn btn-secondary btn-xs" onclick="kalEditMiete('${m.id}')">Bearbeiten</button>
+          ${offer && isAngebotBestaetigt(offer) ? `<button class="btn btn-success btn-xs" onclick="openAuftragModal('${offer.id}')">📋 Auftrag</button>` : ''}
+        </td></tr>`;
+    }).join('');
+    box.innerHTML = `<h3>${formatDateDE(calSelected)}</h3>` + (items.length
+      ? `<div class="table-wrap"><table><thead><tr><th>Material</th><th>Kunde</th><th>Zeitraum</th><th>Status</th><th>Notiz</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>`
+      : '<div style="color:var(--muted); font-size:0.88rem;">Keine Einträge an diesem Tag.</div>');
+  }
+
+  function gotoTab(tabId) {
+    const btn = [...document.querySelectorAll('nav button')].find(b => (b.getAttribute('onclick') || '').includes(`'${tabId}'`));
+    if (btn) showTab(tabId, btn);
+  }
+  function kalEditMiete(id) { gotoTab('tab-miete'); editMiete(id); }
+
+  function exportKalenderIcs() {
+    const rows = vermietungenListe.filter(m => m.status === 'reserviert' || m.status === 'vermietet');
+    if (!rows.length) return alert('Keine offenen Reservierungen oder Vermietungen vorhanden.');
+    const esc = s => String(s || '').replace(/\\/g, '\\\\').replace(/;/g, '\\;').replace(/,/g, '\\,').replace(/\r?\n/g, '\\n');
+    const stamp = new Date().toISOString().replace(/[-:]/g, '').slice(0, 15) + 'Z';
+    const events = rows.map(m => {
+      const a = artikelListe.find(x => x.id === m.artikel_id);
+      const k = kundenListe.find(x => x.id === m.kunde_id);
+      return ['BEGIN:VEVENT', `UID:${m.id}@dkcustom`, `DTSTAMP:${stamp}`,
+        `DTSTART;VALUE=DATE:${String(m.startdatum).replace(/-/g, '')}`,
+        `DTEND;VALUE=DATE:${addDaysToIsoDate(m.enddatum, 1).replace(/-/g, '')}`,
+        `SUMMARY:${esc(`${m.menge}× ${a ? a.bezeichnung : 'Material'} – ${kundeKurz(k)}`)}`,
+        `DESCRIPTION:${esc(`${m.status}${m.notizen ? ' | ' + m.notizen : ''}`)}`, 'END:VEVENT'].join('\r\n');
+    });
+    const ics = ['BEGIN:VCALENDAR', 'VERSION:2.0', 'PRODID:-//DK CUSTOM//Vermietkalender//DE', 'CALSCALE:GREGORIAN', ...events, 'END:VCALENDAR'].join('\r\n');
+    const blob = new Blob([ics], { type: 'text/calendar;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = 'vermietkalender.ics';
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 2000);
+    showToast(`📅 ${rows.length} Einträge exportiert`);
   }
 
   // =========================================================================
