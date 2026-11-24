@@ -594,9 +594,9 @@
         <div class="card-header">
           <h2>Schreiben, Angebote &amp; Rechnungen</h2>
           <div style="display:flex; gap:8px; flex-wrap:wrap;">
-            <button class="btn btn-secondary" onclick="openBelegEditor('schreiben')">✉️ Neues Schreiben / Brief</button>
-            <button class="btn" onclick="openBelegEditor('angebot')">+ Neues Angebot</button>
-            <button class="btn btn-success" onclick="openBelegEditor('rechnung')">+ Neue Rechnung</button>
+            <button class="btn btn-secondary" onclick="openNeuesBeleg('schreiben')">✉️ Neues Schreiben / Brief</button>
+            <button class="btn" onclick="openNeuesBeleg('angebot')">+ Neues Angebot</button>
+            <button class="btn btn-success" onclick="openNeuesBeleg('rechnung')">+ Neue Rechnung</button>
           </div>
         </div>
 
@@ -3861,7 +3861,7 @@
         delete fallbackObj.leistungsdatum_bis;
         ({ error } = await sb.from('belege').update(fallbackObj).eq('id', id));
       }
-      if (error) return alert('Fehler: ' + error.message);
+      if (error) return handleBelegDbError(error);
       await sb.from('beleg_positionen').delete().eq('beleg_id', id);
     } else {
       let { data, error } = await sb.from('belege').insert(belegObj).select().single();
@@ -3870,7 +3870,7 @@
         delete fallbackObj.leistungsdatum_bis;
         ({ data, error } = await sb.from('belege').insert(fallbackObj).select().single());
       }
-      if (error) return alert('Fehler: ' + error.message);
+      if (error) return handleBelegDbError(error);
       savedId = data.id;
 
       if (belegObj.beleg_typ === 'angebot') {
@@ -3910,7 +3910,39 @@
 
   // Ausblenden von Angeboten: Flag steckt im bereits vorhandenen JSON-Feld kunde_snapshot (keine SQL-Änderung nötig)
   function isBelegAusgeblendet(b) {
-    return Boolean(b && b.kunde_snapshot && b.kunde_snapshot._ausgeblendet);
+    return Boolean(b && b.beleg_typ === 'angebot' && b.kunde_snapshot && b.kunde_snapshot._ausgeblendet);
+  }
+
+  // Festgeschriebene Rechnungen sind nicht mehr änderbar (Flag im JSON-Feld kunde_snapshot, keine SQL-Änderung nötig)
+  function isBelegFestgeschrieben(b) {
+    return Boolean(b && b.beleg_typ === 'rechnung' && b.kunde_snapshot && b.kunde_snapshot._festgeschrieben);
+  }
+
+  async function festschreibenBeleg(id, skipConfirm = false) {
+    const b = belegeListe.find(x => x.id === id);
+    if (!b || b.beleg_typ !== 'rechnung' || isBelegFestgeschrieben(b)) return;
+    if (!skipConfirm && !confirm(`Rechnung ${b.belegnummer} festschreiben?\n\nDanach kann sie nicht mehr geändert werden (Drucken, E-Rechnung und „Bezahlt“ bleiben möglich). Korrekturen erfolgen dann per Stornorechnung.`)) return;
+    const snap = { ...(b.kunde_snapshot || {}), _festgeschrieben: true, _festgeschrieben_am: new Date().toISOString().slice(0, 10) };
+    const { error } = await sb.from('belege').update({ kunde_snapshot: snap }).eq('id', id);
+    if (error) return alert('Fehler: ' + error.message);
+    b.kunde_snapshot = snap;
+    showToast('🔒 Rechnung festgeschrieben');
+    renderBelege();
+  }
+
+  // Doppelte Belegnummer (Unique-Index in Supabase) verständlich melden und Zähler neu laden
+  async function handleBelegDbError(error) {
+    if (error && (error.code === '23505' || /duplicate key|unique/i.test(error.message || ''))) {
+      await loadFirma();
+      alert('Diese Belegnummer ist bereits vergeben (z. B. von einem anderen Gerät).\nDer Nummernzähler wurde neu geladen – bitte öffne das Dokument neu bzw. ändere die Nummer.');
+    } else {
+      alert('Fehler: ' + (error && error.message ? error.message : error));
+    }
+  }
+
+  async function openNeuesBeleg(typ) {
+    await loadFirma();
+    openBelegEditor(typ);
   }
 
   async function toggleBelegAusgeblendet(id) {
@@ -3959,6 +3991,7 @@
         const typText = isRechnung ? 'Rechnung' : isAngebot ? 'Angebot' : 'Schreiben';
 
         const hidden = isBelegAusgeblendet(b);
+        const locked = isBelegFestgeschrieben(b);
         const tr = document.createElement('tr');
         if (hidden) tr.style.opacity = '0.55';
         tr.innerHTML = `
@@ -3970,12 +4003,15 @@
           <td>${b.beleg_typ === 'schreiben' ? '-' : '<strong>' + formatEuro(b.summe_brutto) + '</strong>'}</td>
           <td><span class="pill pill-${b.status}">${b.status.toUpperCase()}</span></td>
           <td style="display:flex; gap:5px; flex-wrap:wrap;">
-            <button class="btn btn-secondary btn-sm" onclick="editBelegById('${b.id}')">Bearbeiten</button>
+            ${locked
+              ? `<button class="btn btn-secondary btn-sm" onclick="editBelegById('${b.id}')" title="Festgeschrieben – nicht mehr änderbar">🔒 Festgeschrieben</button>`
+              : `<button class="btn btn-secondary btn-sm" onclick="editBelegById('${b.id}')">Bearbeiten</button>`}
             <button class="btn btn-secondary btn-sm" onclick="printBeleg('${b.id}')">🖨️ Briefkopf Druck</button>
             ${isRechnung ? `<button class="btn btn-success btn-sm" onclick="downloadZugferdPdf('${b.id}')">⚡ E-Rechnung (ZUGFeRD)</button>` : ''}
             ${isAngebot ? `<button class="btn btn-warning btn-sm" onclick="convertAngebotToRechnung('${b.id}')">→ Rechnung</button>` : ''}
             ${isAngebot ? `<button class="btn btn-secondary btn-sm" onclick="toggleBelegAusgeblendet('${b.id}')">${hidden ? '👁️ Einblenden' : '🙈 Ausblenden'}</button>` : ''}
             ${isRechnung && b.status === 'offen' ? `<button class="btn btn-secondary btn-sm" onclick="markBelegBezahlt('${b.id}')">✓ Bezahlt</button>` : ''}
+            ${isRechnung && !locked ? `<button class="btn btn-secondary btn-sm" onclick="festschreibenBeleg('${b.id}')">🔒 Festschreiben</button>` : ''}
           </td>
         `;
         tbody.appendChild(tr);
@@ -3984,11 +4020,17 @@
 
   function editBelegById(id) {
     const b = belegeListe.find(x => x.id === id);
-    if (b) openBelegEditor(b.beleg_typ, b);
+    if (!b) return;
+    if (isBelegFestgeschrieben(b)) {
+      return alert(`Rechnung ${b.belegnummer} ist festgeschrieben und kann nicht mehr geändert werden.\nKorrekturen bitte per Stornorechnung.`);
+    }
+    openBelegEditor(b.beleg_typ, b);
   }
 
   async function markBelegBezahlt(id) {
-    await sb.from('belege').update({ status: 'bezahlt' }).eq('id', id);
+    const b = belegeListe.find(x => x.id === id);
+    const snap = { ...((b && b.kunde_snapshot) || {}), _festgeschrieben: true, _festgeschrieben_am: new Date().toISOString().slice(0, 10) };
+    await sb.from('belege').update({ status: 'bezahlt', kunde_snapshot: snap }).eq('id', id);
     showToast('✅ Als bezahlt markiert!');
     reloadAllData();
   }
@@ -4003,6 +4045,7 @@
     const ag = belegeListe.find(x => x.id === angebotId);
     if (!ag) return;
     if (!confirm(`Aus Angebot ${ag.belegnummer} jetzt eine neue Rechnung erzeugen?`)) return;
+    await loadFirma();
 
     const neueReNr = `RE-${firmenDaten.naechste_rechnungsnr || 2026001}`;
     const today = new Date().toISOString().slice(0, 10);
@@ -4025,6 +4068,9 @@
       kunde_id: ag.kunde_id,
       kunde_snapshot: {
         ...(ag.kunde_snapshot || {}),
+        _ausgeblendet: undefined,
+        _festgeschrieben: undefined,
+        _festgeschrieben_am: undefined,
         _referenz: ag.belegnummer,
         _leistungsdatum_bis: lBis
       },
@@ -4049,7 +4095,7 @@
       ({ data: neueRe, error } = await sb.from('belege').insert(fallbackObj).select().single());
     }
 
-    if (error) return alert('Fehler: ' + error.message);
+    if (error) return handleBelegDbError(error);
 
     const agPos = positionenListe.filter(p => p.beleg_id === ag.id);
     if (agPos.length) {
@@ -4209,6 +4255,7 @@
   async function abrechnenMiete(mieteId) {
     const m = vermietungenListe.find(x => x.id === mieteId);
     if (!m) return;
+    await loadFirma();
     const a = artikelListe.find(x => x.id === m.artikel_id);
     const k = kundenListe.find(x => x.id === m.kunde_id) || {};
     const tage = calcMietTage(m.startdatum, m.enddatum);
@@ -4260,7 +4307,7 @@
       ({ data: re, error } = await sb.from('belege').insert(fallbackObj).select().single());
     }
 
-    if (error) return alert('Fehler: ' + error.message);
+    if (error) return handleBelegDbError(error);
 
     await sb.from('beleg_positionen').insert({
       beleg_id: re.id,
@@ -4861,6 +4908,9 @@ ${prop('ConformanceLevel', 'The conformance level of the embedded Factur-X data'
       a.remove();
       setTimeout(() => URL.revokeObjectURL(url), 2000);
       showToast('⚡ E-Rechnung ' + EINV_BUILD + ' heruntergeladen!');
+      if (!isBelegFestgeschrieben(b) && confirm('E-Rechnung erstellt.\n\nRechnung ' + b.belegnummer + ' jetzt festschreiben (danach nicht mehr änderbar)?')) {
+        await festschreibenBeleg(b.id, true);
+      }
     } catch (err) {
       console.error('ZUGFeRD-Export fehlgeschlagen:', err);
       alert('E-Rechnung konnte nicht erstellt werden: ' + (err && err.message ? err.message : err));
