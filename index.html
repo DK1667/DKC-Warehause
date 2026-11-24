@@ -1177,7 +1177,7 @@
           <div>
             <h2>⚙️ Einstellbare Mietfaktor-Staffel (für Angebote &amp; Vermietung)</h2>
             <p style="margin:4px 0 0 0; font-size:0.84rem; color:var(--muted);">
-              Lege fest, mit welchem Faktor der Tagespreis bei mehrtägigen Einsätzen multipliziert wird (z. B. 1 Tag = 1,0 | 2 Tage = 1,5 | 3 Tage = 2,0).
+              Lege fest, mit welchem Faktor der Tagespreis bei mehrtägigen Einsätzen multipliziert wird (z. B. 1 Tag = 1,0 | 2 Tage = 1,5 | 3 Tage = 2,0). Über den letzten Eintrag hinaus wird der Faktor automatisch mit demselben Zuwachs wie zwischen den letzten beiden Einträgen fortgeführt.
             </p>
           </div>
           <button type="button" class="btn btn-secondary btn-sm" onclick="createDefaultMietfaktoren()">✨ Beispiel-Staffel (1–5 Tage) anlegen</button>
@@ -1244,7 +1244,7 @@
               </div>
               <div class="form-group">
                 <label>Status</label>
-                <select id="miete-status">
+                <select id="miete-status" onchange="updateMieteVerfuegbarkeit()">
                   <option value="reserviert">Reserviert</option>
                   <option value="vermietet">Ausgegeben / Vermietet</option>
                   <option value="zurueck">Zurückgegeben</option>
@@ -1263,7 +1263,7 @@
               </div>
               <div class="form-group">
                 <label>Menge</label>
-                <input type="number" id="miete-menge" value="1" min="1" required />
+                <input type="number" id="miete-menge" value="1" min="1" required oninput="updateMieteVerfuegbarkeit()" />
               </div>
               <div class="form-group">
                 <label>Mietfaktor (Staffel)</label>
@@ -1280,6 +1280,7 @@
                 <input type="text" id="miete-notizen" placeholder="z. B. Messe Halle 4, Anlieferung 08:00 Uhr" />
               </div>
             </div>
+            <div id="miete-verfuegbarkeit" style="margin-bottom:12px; padding:10px 12px; border-radius:8px; font-size:0.86rem; display:none;"></div>
             <div style="display:flex; gap:8px;">
               <button type="submit" class="btn">Vermietung speichern</button>
               <button type="button" class="btn btn-secondary" onclick="toggleBox('miete-editor-box', false)">Abbrechen</button>
@@ -1824,13 +1825,31 @@
     return std;
   }
 
+  // Mietfaktor aus der Staffel. Über den letzten Staffel-Eintrag hinaus wird der Faktor mit dem Zuwachs
+  // der letzten beiden Einträge fortgeführt (z. B. 4 Tage = 2,5 | 5 Tage = 3,0 -> 6 Tage = 3,5 ...).
   function getFaktorForTage(tage) {
     const t = parseInt(tage, 10) || 1;
     if (t <= 1) return 1.0;
-    const exact = mietfaktorenListe.find(x => Number(x.tage) === t);
-    if (exact) return Number(exact.faktor);
-    const lower = [...mietfaktorenListe].filter(x => Number(x.tage) <= t).sort((a, b) => b.tage - a.tage);
-    if (lower.length > 0) return Number(lower[0].faktor);
+    const liste = mietfaktorenListe
+      .map(x => ({ tage: Number(x.tage), faktor: Number(x.faktor) }))
+      .filter(x => x.tage > 0 && x.faktor > 0)
+      .sort((a, b) => a.tage - b.tage);
+    const exact = liste.find(x => x.tage === t);
+    if (exact) return exact.faktor;
+    if (!liste.length) return Number(t);
+
+    const last = liste[liste.length - 1];
+    if (t > last.tage) {
+      let step = 0;
+      if (liste.length >= 2) {
+        const prev = liste[liste.length - 2];
+        step = (last.faktor - prev.faktor) / (last.tage - prev.tage);
+      }
+      if (!(step > 0)) step = last.faktor / last.tage;
+      return Math.round((last.faktor + (t - last.tage) * step) * 100) / 100;
+    }
+    const lower = liste.filter(x => x.tage <= t);
+    if (lower.length > 0) return lower[lower.length - 1].faktor;
     return Number(t);
   }
 
@@ -3103,7 +3122,15 @@
       .forEach(mf => {
         opts.push(`<option value="${mf.tage}" ${t === Number(mf.tage) ? 'selected' : ''}>${mf.tage} Tage (Faktor ${formatNumberDE(mf.faktor)})</option>`);
       });
-    const inList = t === 1 || mietfaktorenListe.some(mf => Number(mf.tage) === t);
+    // Tage über der Staffel (bis 14) mit fortgeführtem Faktor anbieten
+    const maxDef = Math.max(1, ...mietfaktorenListe.map(mf => Number(mf.tage) || 1));
+    const hasExtra = mietfaktorenListe.length > 0;
+    if (hasExtra) {
+      for (let dd = maxDef + 1; dd <= 14; dd++) {
+        opts.push(`<option value="${dd}" ${t === dd ? 'selected' : ''}>${dd} Tage (Faktor ${formatNumberDE(getFaktorForTage(dd))}, fortgeführt)</option>`);
+      }
+    }
+    const inList = t === 1 || mietfaktorenListe.some(mf => Number(mf.tage) === t) || (hasExtra && t > maxDef && t <= 14);
     opts.push(`<option value="__custom__" ${!inList ? 'selected' : ''}>Freier Faktor</option>`);
     return opts.join('');
   }
@@ -4149,10 +4176,70 @@
     }
   }
 
+  // Prüft Bestand je Tag im Zeitraum. Nur Status „Zurückgegeben“ gibt das Gerät wieder frei.
+  function pruefeMieteVerfuegbarkeit(artikelId, von, bis, menge, ignoreId = '') {
+    const a = artikelListe.find(x => x.id === artikelId);
+    if (!a || !von || !bis || bis < von) return null;
+    const bestand = Number(a.bestand) || 0;
+    const relevant = vermietungenListe.filter(m =>
+      m.artikel_id === artikelId && m.id !== ignoreId && m.status !== 'zurueck' &&
+      m.startdatum <= bis && m.enddatum >= von);
+
+    let minFrei = bestand, kritischerTag = von, tagZaehler = 0;
+    const cur = new Date(von + 'T00:00:00');
+    const end = new Date(bis + 'T00:00:00');
+    while (cur <= end && tagZaehler < 800) {
+      const iso = `${cur.getFullYear()}-${String(cur.getMonth() + 1).padStart(2, '0')}-${String(cur.getDate()).padStart(2, '0')}`;
+      const belegt = relevant
+        .filter(m => m.startdatum <= iso && m.enddatum >= iso)
+        .reduce((s, m) => s + (Number(m.menge) || 0), 0);
+      if (bestand - belegt < minFrei) { minFrei = bestand - belegt; kritischerTag = iso; }
+      cur.setDate(cur.getDate() + 1);
+      tagZaehler++;
+    }
+    const konflikte = relevant.filter(m => m.startdatum <= kritischerTag && m.enddatum >= kritischerTag);
+    return { bestand, minFrei, kritischerTag, konflikte, ok: minFrei >= (Number(menge) || 1), name: a.bezeichnung };
+  }
+
+  function mieteKonfliktText(res) {
+    const lines = res.konflikte.map(m => {
+      const k = kundenListe.find(x => x.id === m.kunde_id);
+      return `• ${getKundenAnzeigeName(k)}: ${m.menge} Stk., ${formatDateDE(m.startdatum)} – ${formatDateDE(m.enddatum)} (${m.status})`;
+    });
+    return `Am ${formatDateDE(res.kritischerTag)} sind von ${res.bestand} Stk. nur noch ${Math.max(res.minFrei, 0)} frei.` +
+      (lines.length ? '\n\nBereits vergeben an:\n' + lines.join('\n') : '');
+  }
+
+  function updateMieteVerfuegbarkeit() {
+    const box = document.getElementById('miete-verfuegbarkeit');
+    if (!box) return;
+    const status = document.getElementById('miete-status').value;
+    const res = status === 'zurueck' ? null : pruefeMieteVerfuegbarkeit(
+      document.getElementById('miete-artikel').value,
+      document.getElementById('miete-von').value,
+      document.getElementById('miete-bis').value,
+      document.getElementById('miete-menge').value,
+      document.getElementById('miete-id').value
+    );
+    if (!res) { box.style.display = 'none'; return; }
+    box.style.display = 'block';
+    if (res.ok) {
+      box.style.background = 'rgba(16,185,129,0.15)';
+      box.style.color = '#6ee7b7';
+      box.textContent = `✅ Verfügbar: im gesamten Zeitraum mindestens ${res.minFrei} von ${res.bestand} Stk. frei.`;
+    } else {
+      box.style.background = 'rgba(239,68,68,0.15)';
+      box.style.color = '#fca5a5';
+      box.style.whiteSpace = 'pre-line';
+      box.textContent = `⚠️ Nicht genug Bestand für ${res.name}. ` + mieteKonfliktText(res);
+    }
+  }
+
   function onMieteArtikelChange() {
     const artId = document.getElementById('miete-artikel').value;
     const a = artikelListe.find(x => x.id === artId);
     if (a) document.getElementById('miete-preis').value = a.preis_netto;
+    updateMieteVerfuegbarkeit();
   }
 
   function onMieteDatesChange() {
@@ -4162,6 +4249,7 @@
       const tage = calcMietTage(von, bis);
       document.getElementById('miete-faktor').value = getFaktorForTage(tage);
     }
+    updateMieteVerfuegbarkeit();
   }
 
   function resetMieteForm() {
@@ -4191,6 +4279,10 @@
       status: document.getElementById('miete-status').value,
       notizen: document.getElementById('miete-notizen').value.trim()
     };
+    if (payload.status !== 'zurueck') {
+      const chk = pruefeMieteVerfuegbarkeit(payload.artikel_id, payload.startdatum, payload.enddatum, payload.menge, id);
+      if (chk && !chk.ok && !confirm(`⚠️ Nicht genug Bestand für ${chk.name}!\n\n${mieteKonfliktText(chk)}\n\nTrotzdem speichern?`)) return;
+    }
     const res = id ? await sb.from('vermietungen').update(payload).eq('id', id) : await sb.from('vermietungen').insert(payload);
     if (res.error) return alert('Fehler: ' + res.error.message);
     showToast('✅ Vermietung gespeichert!');
@@ -4250,6 +4342,7 @@
     document.getElementById('miete-status').value = m.status;
     document.getElementById('miete-notizen').value = m.notizen || '';
     toggleBox('miete-editor-box', true);
+    updateMieteVerfuegbarkeit();
   }
 
   async function abrechnenMiete(mieteId) {
