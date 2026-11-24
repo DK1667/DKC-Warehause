@@ -12,6 +12,7 @@
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
   <script src="https://cdn.jsdelivr.net/npm/pdf-lib@1.17.1/dist/pdf-lib.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@pdf-lib/fontkit@1.1.1/dist/fontkit.umd.min.js"></script>
   <style>
     :root {
       --bg: #0f172a;
@@ -4249,73 +4250,134 @@
   }
 
   // =========================================================================
-  // E-RECHNUNG (ZUGFeRD 2.2 / EN 16931 XML IN PDF – MIT MEHRSEITEN-UMBRUCH &
-  // FESTER FUSSZEILE AUF JEDER SEITE)
+  // E-RECHNUNG (ZUGFeRD 2.x / Factur-X, Profil EN 16931)
+  // ERSETZT: escXml(), buildZugferdXml(), downloadZugferdPdf()
   // =========================================================================
+  const EINV_FONT_REGULAR = 'https://cdn.jsdelivr.net/npm/@fontsource/roboto@5.0.8/files/roboto-latin-400-normal.woff';
+  const EINV_FONT_BOLD = 'https://cdn.jsdelivr.net/npm/@fontsource/roboto@5.0.8/files/roboto-latin-700-normal.woff';
+
   function escXml(str) {
-    return String(str || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+    return String(str ?? '')
+      .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F]/g, '')
+      .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;').replace(/'/g, '&apos;');
   }
 
-  function buildZugferdXml(b, k, pos) {
-    const dt = (b.belegdatum || '').replace(/-/g, '');
-    const lVon = (b.leistungsdatum_von || b.belegdatum || '').replace(/-/g, '');
-    const buyerName = k.firma || `${k.vorname || ''} ${k.nachname || ''}`.trim() || 'Kunde';
-    const docRabatt = Number(b.rabatt_prozent) || 0;
-    const rabattFaktor = 1 - docRabatt / 100;
+  function r2(n) { return Math.round((Number(n) + Number.EPSILON) * 100) / 100; }
 
-    const taxGroups = {};
-    pos.forEach(p => {
-      const rate = Number(p.mwst_satz).toFixed(2);
-      if (!taxGroups[rate]) taxGroups[rate] = { basis: 0, tax: 0 };
-      const basis = Number(p.gesamt_netto) * rabattFaktor;
-      taxGroups[rate].basis += basis;
-      taxGroups[rate].tax += basis * (Number(p.mwst_satz) / 100);
+  function einvUnitCode(einheit) {
+    return ({ 'Stk.': 'C62', 'Pauschale': 'C62', 'Std.': 'HUR', 'Tag': 'DAY', 'km': 'KMT' })[einheit] || 'C62';
+  }
+
+  // Zentrale Berechnung: XML und PDF nutzen exakt dieselben Zahlen
+  function computeEInvoiceData(b, pos) {
+    const docRab = Number(b.rabatt_prozent) || 0;
+    const lines = pos.map((p, i) => {
+      const faktor = Number(p.mietfaktor) || 1;
+      const menge = p.einheit === 'Pauschale' ? 1 : (Number(p.menge) || 0);
+      const qty = Math.round(menge * faktor * 10000) / 10000;
+      const price = Math.round(Number(p.einzelpreis_netto || 0) * (1 - (Number(p.rabatt_prozent) || 0) / 100) * 10000) / 10000;
+      return { ...p, nr: i + 1, faktor, menge, qty, price, total: r2(qty * price), rate: Number(p.mwst_satz) || 0 };
     });
 
-    const taxXml = Object.entries(taxGroups).map(([rate, val]) => `
+    const taxMap = {};
+    lines.forEach(l => {
+      const key = l.rate.toFixed(2);
+      if (!taxMap[key]) taxMap[key] = { rate: l.rate, lineSum: 0 };
+      taxMap[key].lineSum += l.total;
+    });
+
+    let lineTotal = 0, allowTotal = 0, basisTotal = 0, taxTotal = 0;
+    const taxes = Object.values(taxMap).map(t => {
+      t.lineSum = r2(t.lineSum);
+      t.allow = r2(t.lineSum * docRab / 100);
+      t.basis = r2(t.lineSum - t.allow);
+      t.tax = r2(t.basis * t.rate / 100);
+      lineTotal += t.lineSum; allowTotal += t.allow; basisTotal += t.basis; taxTotal += t.tax;
+      return t;
+    });
+
+    lineTotal = r2(lineTotal); allowTotal = r2(allowTotal);
+    basisTotal = r2(basisTotal); taxTotal = r2(taxTotal);
+    return { docRab, lines, taxes, lineTotal, allowTotal, basisTotal, taxTotal, grand: r2(basisTotal + taxTotal) };
+  }
+
+  function buildZugferdXml(b, k, d) {
+    const f2 = n => Number(n).toFixed(2);
+    const dt = iso => String(iso || '').replace(/-/g, '');
+    const buyerName = k.firma || `${k.vorname || ''} ${k.nachname || ''}`.trim() || 'Kunde';
+    const lVonIso = b.leistungsdatum_von || b.belegdatum;
+    const lBisIso = b.leistungsdatum_bis || k._leistungsdatum_bis || lVonIso;
+    const tage = parseInt(firmenDaten.zahlungsziel_tage, 10) || 14;
+    const faelligIso = addDaysToIsoDate(b.belegdatum, tage);
+    const hasRange = lVonIso && lBisIso && lVonIso !== lBisIso;
+    const ort = (o) => `<ram:PostalTradeAddress>
+          <ram:PostcodeCode>${escXml(o.plz)}</ram:PostcodeCode>
+          <ram:LineOne>${escXml(o.strasse)}</ram:LineOne>
+          <ram:CityName>${escXml(o.ort)}</ram:CityName>
+          <ram:CountryID>DE</ram:CountryID>
+        </ram:PostalTradeAddress>`;
+
+    const linesXml = d.lines.map(l => {
+      const name = (l.gruppe && l.gruppe !== 'Allgemein' ? `[${l.gruppe}] ` : '') + (l.bezeichnung || 'Position')
+        + (l.faktor !== 1 ? ` (Mietfaktor ${formatNumberDE(l.faktor)})` : '');
+      return `
+    <ram:IncludedSupplyChainTradeLineItem>
+      <ram:AssociatedDocumentLineDocument>
+        <ram:LineID>${l.nr}</ram:LineID>
+      </ram:AssociatedDocumentLineDocument>
+      <ram:SpecifiedTradeProduct>
+        <ram:Name>${escXml(name)}</ram:Name>${l.beschreibung_anzeigen && l.beschreibung ? `
+        <ram:Description>${escXml(l.beschreibung)}</ram:Description>` : ''}
+      </ram:SpecifiedTradeProduct>
+      <ram:SpecifiedLineTradeAgreement>
+        <ram:NetPriceProductTradePrice>
+          <ram:ChargeAmount>${l.price.toFixed(4)}</ram:ChargeAmount>
+        </ram:NetPriceProductTradePrice>
+      </ram:SpecifiedLineTradeAgreement>
+      <ram:SpecifiedLineTradeDelivery>
+        <ram:BilledQuantity unitCode="${einvUnitCode(l.einheit)}">${l.qty.toFixed(4)}</ram:BilledQuantity>
+      </ram:SpecifiedLineTradeDelivery>
+      <ram:SpecifiedLineTradeSettlement>
+        <ram:ApplicableTradeTax>
+          <ram:TypeCode>VAT</ram:TypeCode>
+          <ram:CategoryCode>${l.rate > 0 ? 'S' : 'E'}</ram:CategoryCode>
+          <ram:RateApplicablePercent>${f2(l.rate)}</ram:RateApplicablePercent>
+        </ram:ApplicableTradeTax>
+        <ram:SpecifiedTradeSettlementLineMonetarySummation>
+          <ram:LineTotalAmount>${f2(l.total)}</ram:LineTotalAmount>
+        </ram:SpecifiedTradeSettlementLineMonetarySummation>
+      </ram:SpecifiedLineTradeSettlement>
+    </ram:IncludedSupplyChainTradeLineItem>`;
+    }).join('');
+
+    const taxXml = d.taxes.map(t => `
       <ram:ApplicableTradeTax>
-        <ram:CalculatedAmount>${val.tax.toFixed(2)}</ram:CalculatedAmount>
-        <ram:TypeCode>VAT</ram:TypeCode>
-        <ram:BasisAmount>${val.basis.toFixed(2)}</ram:BasisAmount>
-        <ram:CategoryCode>${Number(rate) > 0 ? 'S' : 'E'}</ram:CategoryCode>
-        <ram:RateApplicablePercent>${rate}</ram:RateApplicablePercent>
+        <ram:CalculatedAmount>${f2(t.tax)}</ram:CalculatedAmount>
+        <ram:TypeCode>VAT</ram:TypeCode>${t.rate > 0 ? '' : `
+        <ram:ExemptionReason>Steuerfrei</ram:ExemptionReason>`}
+        <ram:BasisAmount>${f2(t.basis)}</ram:BasisAmount>
+        <ram:CategoryCode>${t.rate > 0 ? 'S' : 'E'}</ram:CategoryCode>
+        <ram:RateApplicablePercent>${f2(t.rate)}</ram:RateApplicablePercent>
       </ram:ApplicableTradeTax>`).join('');
 
-    const linesXml = pos.map(p => {
-      const effNetto = Number(p.gesamt_netto) * rabattFaktor;
-      const faktor = Number(p.mietfaktor) || 1;
-      const effMenge = Number(p.menge) * faktor;
-      const effEinzel = effMenge > 0 ? effNetto / effMenge : effNetto;
-      const faktorSuffix = faktor !== 1 ? ` (Mietfaktor ${formatNumberDE(faktor)})` : '';
-      return `
-      <ram:IncludedSupplyChainTradeLineItem>
-        <ram:AssociatedDocumentLineDocument>
-          <ram:LineID>${p.position_nr}</ram:LineID>
-        </ram:AssociatedDocumentLineDocument>
-        <ram:SpecifiedTradeProduct>
-          <ram:Name>${escXml((p.gruppe && p.gruppe !== 'Allgemein' ? '[' + p.gruppe + '] ' : '') + p.bezeichnung + faktorSuffix)}</ram:Name>
-          ${p.beschreibung_anzeigen && p.beschreibung ? `<ram:Description>${escXml(p.beschreibung)}</ram:Description>` : ''}
-        </ram:SpecifiedTradeProduct>
-        <ram:SpecifiedLineTradeAgreement>
-          <ram:NetPriceProductTradePrice>
-            <ram:ChargeAmount>${effEinzel.toFixed(2)}</ram:ChargeAmount>
-          </ram:NetPriceProductTradePrice>
-        </ram:SpecifiedLineTradeAgreement>
-        <ram:SpecifiedLineTradeDelivery>
-          <ram:BilledQuantity unitCode="C62">${effMenge.toFixed(2)}</ram:BilledQuantity>
-        </ram:SpecifiedLineTradeDelivery>
-        <ram:SpecifiedLineTradeSettlement>
-          <ram:ApplicableTradeTax>
-            <ram:TypeCode>VAT</ram:TypeCode>
-            <ram:CategoryCode>${Number(p.mwst_satz) > 0 ? 'S' : 'E'}</ram:CategoryCode>
-            <ram:RateApplicablePercent>${Number(p.mwst_satz).toFixed(2)}</ram:RateApplicablePercent>
-          </ram:ApplicableTradeTax>
-          <ram:SpecifiedTradeSettlementLineMonetarySummation>
-            <ram:LineTotalAmount>${effNetto.toFixed(2)}</ram:LineTotalAmount>
-          </ram:SpecifiedTradeSettlementLineMonetarySummation>
-        </ram:SpecifiedLineTradeSettlement>
-      </ram:IncludedSupplyChainTradeLineItem>`;
-    }).join('');
+    const allowXml = d.taxes.filter(t => t.allow > 0).map(t => `
+      <ram:SpecifiedTradeAllowanceCharge>
+        <ram:ChargeIndicator><udt:Indicator>false</udt:Indicator></ram:ChargeIndicator>
+        <ram:CalculationPercent>${f2(d.docRab)}</ram:CalculationPercent>
+        <ram:BasisAmount>${f2(t.lineSum)}</ram:BasisAmount>
+        <ram:ActualAmount>${f2(t.allow)}</ram:ActualAmount>
+        <ram:ReasonCode>95</ram:ReasonCode>
+        <ram:Reason>Kunden-/Gesamtrabatt</ram:Reason>
+        <ram:CategoryTradeTax>
+          <ram:TypeCode>VAT</ram:TypeCode>
+          <ram:CategoryCode>${t.rate > 0 ? 'S' : 'E'}</ram:CategoryCode>
+          <ram:RateApplicablePercent>${f2(t.rate)}</ram:RateApplicablePercent>
+        </ram:CategoryTradeTax>
+      </ram:SpecifiedTradeAllowanceCharge>`).join('');
+
+    const iban = (firmenDaten.iban || '').replace(/\s+/g, '');
+    const bic = (firmenDaten.bic || '').replace(/\s+/g, '');
 
     return `<?xml version="1.0" encoding="UTF-8"?>
 <rsm:CrossIndustryInvoice xmlns:rsm="urn:un:unece:uncefact:data:standard:CrossIndustryInvoice:100"
@@ -4323,183 +4385,418 @@
   xmlns:udt="urn:un:unece:uncefact:data:standard:UnqualifiedDataType:100">
   <rsm:ExchangedDocumentContext>
     <ram:GuidelineSpecifiedDocumentContextParameter>
-      <ram:ID>urn:cen.eu:en16931:2017#compliant#urn:factur-x.eu:1p0:en16931</ram:ID>
+      <ram:ID>urn:cen.eu:en16931:2017</ram:ID>
     </ram:GuidelineSpecifiedDocumentContextParameter>
   </rsm:ExchangedDocumentContext>
   <rsm:ExchangedDocument>
     <ram:ID>${escXml(b.belegnummer)}</ram:ID>
     <ram:TypeCode>380</ram:TypeCode>
-    <ram:IssueDateTime><udt:DateTimeString format="102">${dt}</udt:DateTimeString></ram:IssueDateTime>
+    <ram:IssueDateTime><udt:DateTimeString format="102">${dt(b.belegdatum)}</udt:DateTimeString></ram:IssueDateTime>
   </rsm:ExchangedDocument>
-  <rsm:SupplyChainTradeTransaction>
-    ${linesXml}
-    <ram:ApplicableHeaderTradeAgreement>
-      ${k.leitweg_id ? `<ram:BuyerReference>${escXml(k.leitweg_id)}</ram:BuyerReference>` : ''}
+  <rsm:SupplyChainTradeTransaction>${linesXml}
+    <ram:ApplicableHeaderTradeAgreement>${k.leitweg_id ? `
+      <ram:BuyerReference>${escXml(k.leitweg_id)}</ram:BuyerReference>` : ''}
       <ram:SellerTradeParty>
-        <ram:Name>${escXml(firmenDaten.firmenname)}</ram:Name>
-        <ram:PostalTradeAddress>
-          <ram:PostcodeCode>${escXml(firmenDaten.plz)}</ram:PostcodeCode>
-          <ram:LineOne>${escXml(firmenDaten.strasse)}</ram:LineOne>
-          <ram:CityName>${escXml(firmenDaten.ort)}</ram:CityName>
-          <ram:CountryID>DE</ram:CountryID>
-        </ram:PostalTradeAddress>
-        ${firmenDaten.ust_id ? `<ram:SpecifiedTaxRegistration><ram:ID schemeID="VA">${escXml(firmenDaten.ust_id)}</ram:ID></ram:SpecifiedTaxRegistration>` : ''}
-        ${firmenDaten.steuernummer ? `<ram:SpecifiedTaxRegistration><ram:ID schemeID="FC">${escXml(firmenDaten.steuernummer)}</ram:ID></ram:SpecifiedTaxRegistration>` : ''}
+        <ram:Name>${escXml(firmenDaten.firmenname)}</ram:Name>${(firmenDaten.inhaber || firmenDaten.telefon || firmenDaten.email) ? `
+        <ram:DefinedTradeContact>${firmenDaten.inhaber ? `
+          <ram:PersonName>${escXml(firmenDaten.inhaber)}</ram:PersonName>` : ''}${firmenDaten.telefon ? `
+          <ram:TelephoneUniversalCommunication><ram:CompleteNumber>${escXml(firmenDaten.telefon)}</ram:CompleteNumber></ram:TelephoneUniversalCommunication>` : ''}${firmenDaten.email ? `
+          <ram:EmailURIUniversalCommunication><ram:URIID>${escXml(firmenDaten.email)}</ram:URIID></ram:EmailURIUniversalCommunication>` : ''}
+        </ram:DefinedTradeContact>` : ''}
+        ${ort(firmenDaten)}${firmenDaten.email ? `
+        <ram:URIUniversalCommunication><ram:URIID schemeID="EM">${escXml(firmenDaten.email)}</ram:URIID></ram:URIUniversalCommunication>` : ''}${firmenDaten.steuernummer ? `
+        <ram:SpecifiedTaxRegistration><ram:ID schemeID="FC">${escXml(firmenDaten.steuernummer)}</ram:ID></ram:SpecifiedTaxRegistration>` : ''}${firmenDaten.ust_id ? `
+        <ram:SpecifiedTaxRegistration><ram:ID schemeID="VA">${escXml(firmenDaten.ust_id)}</ram:ID></ram:SpecifiedTaxRegistration>` : ''}
       </ram:SellerTradeParty>
-      <ram:BuyerTradeParty>
+      <ram:BuyerTradeParty>${k.kundennummer ? `
+        <ram:ID>${escXml(k.kundennummer)}</ram:ID>` : ''}
         <ram:Name>${escXml(buyerName)}</ram:Name>
-        <ram:PostalTradeAddress>
-          <ram:PostcodeCode>${escXml(k.plz)}</ram:PostcodeCode>
-          <ram:LineOne>${escXml(k.strasse)}</ram:LineOne>
-          <ram:CityName>${escXml(k.ort)}</ram:CityName>
-          <ram:CountryID>DE</ram:CountryID>
-        </ram:PostalTradeAddress>
-        ${k.ust_id ? `<ram:SpecifiedTaxRegistration><ram:ID schemeID="VA">${escXml(k.ust_id)}</ram:ID></ram:SpecifiedTaxRegistration>` : ''}
+        ${ort(k)}${k.ust_id ? `
+        <ram:SpecifiedTaxRegistration><ram:ID schemeID="VA">${escXml(k.ust_id)}</ram:ID></ram:SpecifiedTaxRegistration>` : ''}
       </ram:BuyerTradeParty>
     </ram:ApplicableHeaderTradeAgreement>
     <ram:ApplicableHeaderTradeDelivery>
       <ram:ActualDeliverySupplyChainEvent>
-        <ram:OccurrenceDateTime><udt:DateTimeString format="102">${lVon}</udt:DateTimeString></ram:OccurrenceDateTime>
+        <ram:OccurrenceDateTime><udt:DateTimeString format="102">${dt(lVonIso)}</udt:DateTimeString></ram:OccurrenceDateTime>
       </ram:ActualDeliverySupplyChainEvent>
     </ram:ApplicableHeaderTradeDelivery>
     <ram:ApplicableHeaderTradeSettlement>
+      <ram:PaymentReference>${escXml(b.belegnummer)}</ram:PaymentReference>
       <ram:InvoiceCurrencyCode>EUR</ram:InvoiceCurrencyCode>
       <ram:SpecifiedTradeSettlementPaymentMeans>
         <ram:TypeCode>58</ram:TypeCode>
         <ram:PayeePartyCreditorFinancialAccount>
-          <ram:IBANID>${escXml((firmenDaten.iban || '').replace(/\s+/g, ''))}</ram:IBANID>
-        </ram:PayeePartyCreditorFinancialAccount>
-      </ram:SpecifiedTradeSettlementPaymentMeans>
-      ${taxXml}
+          <ram:IBANID>${escXml(iban)}</ram:IBANID>
+        </ram:PayeePartyCreditorFinancialAccount>${bic ? `
+        <ram:PayeeSpecifiedCreditorFinancialInstitution>
+          <ram:BICID>${escXml(bic)}</ram:BICID>
+        </ram:PayeeSpecifiedCreditorFinancialInstitution>` : ''}
+      </ram:SpecifiedTradeSettlementPaymentMeans>${taxXml}${hasRange ? `
+      <ram:BillingSpecifiedPeriod>
+        <ram:StartDateTime><udt:DateTimeString format="102">${dt(lVonIso)}</udt:DateTimeString></ram:StartDateTime>
+        <ram:EndDateTime><udt:DateTimeString format="102">${dt(lBisIso)}</udt:DateTimeString></ram:EndDateTime>
+      </ram:BillingSpecifiedPeriod>` : ''}${allowXml}
+      <ram:SpecifiedTradePaymentTerms>
+        <ram:Description>Zahlbar innerhalb von ${tage} Tagen ohne Abzug bis ${formatDateDE(faelligIso)}</ram:Description>
+        <ram:DueDateDateTime><udt:DateTimeString format="102">${dt(faelligIso)}</udt:DateTimeString></ram:DueDateDateTime>
+      </ram:SpecifiedTradePaymentTerms>
       <ram:SpecifiedTradeSettlementHeaderMonetarySummation>
-        <ram:LineTotalAmount>${Number(b.summe_netto).toFixed(2)}</ram:LineTotalAmount>
-        <ram:TaxBasisTotalAmount>${Number(b.summe_netto).toFixed(2)}</ram:TaxBasisTotalAmount>
-        <ram:TaxTotalAmount currencyID="EUR">${Number(b.summe_mwst).toFixed(2)}</ram:TaxTotalAmount>
-        <ram:GrandTotalAmount>${Number(b.summe_brutto).toFixed(2)}</ram:GrandTotalAmount>
-        <ram:DuePayableAmount>${Number(b.summe_brutto).toFixed(2)}</ram:DuePayableAmount>
+        <ram:LineTotalAmount>${f2(d.lineTotal)}</ram:LineTotalAmount>${d.allowTotal > 0 ? `
+        <ram:AllowanceTotalAmount>${f2(d.allowTotal)}</ram:AllowanceTotalAmount>` : ''}
+        <ram:TaxBasisTotalAmount>${f2(d.basisTotal)}</ram:TaxBasisTotalAmount>
+        <ram:TaxTotalAmount currencyID="EUR">${f2(d.taxTotal)}</ram:TaxTotalAmount>
+        <ram:GrandTotalAmount>${f2(d.grand)}</ram:GrandTotalAmount>
+        <ram:DuePayableAmount>${f2(d.grand)}</ram:DuePayableAmount>
       </ram:SpecifiedTradeSettlementHeaderMonetarySummation>
     </ram:ApplicableHeaderTradeSettlement>
   </rsm:SupplyChainTradeTransaction>
 </rsm:CrossIndustryInvoice>`;
   }
 
+  function buildFacturXXmp(title, author, producer, isoNow) {
+    const e = escXml;
+    const prop = (n, d) => `<rdf:li rdf:parseType="Resource"><pdfaProperty:name>${n}</pdfaProperty:name><pdfaProperty:valueType>Text</pdfaProperty:valueType><pdfaProperty:category>external</pdfaProperty:category><pdfaProperty:description>${d}</pdfaProperty:description></rdf:li>`;
+    return `<?xpacket begin="\uFEFF" id="W5M0MpCehiHzreSzNTczkc9d"?>
+<x:xmpmeta xmlns:x="adobe:ns:meta/">
+<rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
+<rdf:Description rdf:about="" xmlns:pdfaid="http://www.aiim.org/pdfa/ns/id/">
+<pdfaid:part>3</pdfaid:part><pdfaid:conformance>B</pdfaid:conformance>
+</rdf:Description>
+<rdf:Description rdf:about="" xmlns:dc="http://purl.org/dc/elements/1.1/">
+<dc:title><rdf:Alt><rdf:li xml:lang="x-default">${e(title)}</rdf:li></rdf:Alt></dc:title>
+<dc:creator><rdf:Seq><rdf:li>${e(author)}</rdf:li></rdf:Seq></dc:creator>
+</rdf:Description>
+<rdf:Description rdf:about="" xmlns:pdf="http://ns.adobe.com/pdf/1.3/">
+<pdf:Producer>${e(producer)}</pdf:Producer>
+</rdf:Description>
+<rdf:Description rdf:about="" xmlns:xmp="http://ns.adobe.com/xap/1.0/">
+<xmp:CreatorTool>${e(producer)}</xmp:CreatorTool><xmp:CreateDate>${isoNow}</xmp:CreateDate><xmp:ModifyDate>${isoNow}</xmp:ModifyDate>
+</rdf:Description>
+<rdf:Description rdf:about="" xmlns:fx="urn:factur-x:pdfa:CrossIndustryDocument:invoice:1p0#">
+<fx:DocumentType>INVOICE</fx:DocumentType><fx:DocumentFileName>factur-x.xml</fx:DocumentFileName><fx:Version>1.0</fx:Version><fx:ConformanceLevel>EN 16931</fx:ConformanceLevel>
+</rdf:Description>
+<rdf:Description rdf:about="" xmlns:pdfaExtension="http://www.aiim.org/pdfa/ns/extension/" xmlns:pdfaSchema="http://www.aiim.org/pdfa/ns/schema#" xmlns:pdfaProperty="http://www.aiim.org/pdfa/ns/property#">
+<pdfaExtension:schemas><rdf:Bag><rdf:li rdf:parseType="Resource">
+<pdfaSchema:schema>Factur-X PDFA Extension Schema</pdfaSchema:schema>
+<pdfaSchema:namespaceURI>urn:factur-x:pdfa:CrossIndustryDocument:invoice:1p0#</pdfaSchema:namespaceURI>
+<pdfaSchema:prefix>fx</pdfaSchema:prefix>
+<pdfaSchema:property><rdf:Seq>
+${prop('DocumentFileName', 'name of the embedded XML invoice file')}
+${prop('DocumentType', 'INVOICE')}
+${prop('Version', 'The actual version of the Factur-X XML schema')}
+${prop('ConformanceLevel', 'The conformance level of the embedded Factur-X data')}
+</rdf:Seq></pdfaSchema:property>
+</rdf:li></rdf:Bag></pdfaExtension:schemas>
+</rdf:Description>
+</rdf:RDF>
+</x:xmpmeta>
+<?xpacket end="w"?>`;
+  }
+
   async function downloadZugferdPdf(belegId) {
-    const b = belegeListe.find(x => x.id === belegId);
-    if (!b) return;
-    const k = b.kunde_snapshot && b.kunde_snapshot.kundennummer ? b.kunde_snapshot : kundenListe.find(x => x.id === b.kunde_id) || {};
-    const pos = positionenListe.filter(p => p.beleg_id === b.id);
-    const nurGruppen = (b.preisanzeige_modus || 'einzel_und_gruppe') === 'nur_gruppe';
-    const leistText = formatLeistungszeitraumText(b.leistungsdatum_von || b.belegdatum, b.leistungsdatum_bis || k._leistungsdatum_bis || '');
+    try {
+      const b = belegeListe.find(x => x.id === belegId);
+      if (!b) return;
+      const k = (b.kunde_snapshot && b.kunde_snapshot.kundennummer ? b.kunde_snapshot : kundenListe.find(x => x.id === b.kunde_id)) || {};
+      const pos = positionenListe.filter(p => p.beleg_id === b.id).sort((a, c) => a.position_nr - c.position_nr);
 
-    const xmlString = buildZugferdXml(b, k, pos);
-    const { PDFDocument, StandardFonts, rgb } = PDFLib;
-    const pdfDoc = await PDFDocument.create();
-    const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
-    const fontBold = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
+      // --- Pflichtangaben prüfen ---
+      const missing = [];
+      if (!pos.length) missing.push('mindestens eine Rechnungsposition');
+      if (!firmenDaten.firmenname) missing.push('Firmenname');
+      if (!firmenDaten.strasse || !firmenDaten.plz || !firmenDaten.ort) missing.push('Firmenanschrift');
+      if (!firmenDaten.steuernummer && !firmenDaten.ust_id) missing.push('Steuernummer oder USt-IdNr. (Firmendaten)');
+      if (!firmenDaten.iban) missing.push('IBAN (Firmendaten)');
+      if (!(k.firma || k.nachname || k.vorname)) missing.push('Kundenname');
+      if (!k.strasse || !k.plz || !k.ort) missing.push('Kundenanschrift');
+      if (missing.length) return alert('E-Rechnung nicht möglich. Es fehlt:\n• ' + missing.join('\n• '));
 
-    const drawPdfFooterOnPage = (targetPage, pageNum) => {
-      targetPage.drawLine({
-        start: { x: 56.7, y: 66 },
-        end: { x: 544, y: 66 },
-        thickness: 1.5,
-        color: rgb(0.49, 0.13, 0.81)
-      });
-      targetPage.drawText(`${firmenDaten.firmenname || 'DK CUSTOM'} | Inh.: ${firmenDaten.inhaber || '-'} | ${firmenDaten.strasse || ''}, ${firmenDaten.plz || ''} ${firmenDaten.ort || ''}`, {
-        x: 56.7, y: 52, size: 7.5, font, color: rgb(0.25, 0.25, 0.25)
-      });
-      targetPage.drawText(`St.-Nr.: ${firmenDaten.steuernummer || '-'} | USt-IdNr.: ${firmenDaten.ust_id || '-'} | IBAN: ${firmenDaten.iban || '-'}`, {
-        x: 56.7, y: 40, size: 7.5, font, color: rgb(0.25, 0.25, 0.25)
-      });
-      targetPage.drawText(`Seite ${pageNum}`, {
-        x: 510, y: 40, size: 7.5, font, color: rgb(0.4, 0.4, 0.4)
-      });
-    };
+      const d = computeEInvoiceData(b, pos);
+      const xmlString = buildZugferdXml(b, k, d);
+      const nurGruppen = (b.preisanzeige_modus || 'einzel_und_gruppe') === 'nur_gruppe';
+      const { PDFDocument, StandardFonts, rgb, PDFName, PDFString, PDFHexString } = PDFLib;
+      const pdfDoc = await PDFDocument.create();
 
-    let pageNum = 1;
-    let page = pdfDoc.addPage([595.28, 841.89]);
-    drawPdfFooterOnPage(page, pageNum);
-
-    const addNextPage = () => {
-      pageNum++;
-      page = pdfDoc.addPage([595.28, 841.89]);
-      drawPdfFooterOnPage(page, pageNum);
-      page.drawText(`${b.belegnummer} (Fortsetzung)`, { x: 56.7, y: 790, size: 9, font: fontBold, color: rgb(0.35, 0.35, 0.35) });
-      return 765;
-    };
-
-    // DIN-5008 Sichtfenster-Position in PDF-Koordinaten
-    const senderLine = `${firmenDaten.firmenname || 'DK CUSTOM'} • ${firmenDaten.strasse || ''} • ${firmenDaten.plz || ''} ${firmenDaten.ort || ''}`;
-    page.drawText(senderLine, { x: 56.7, y: 716, size: 7.5, font, color: rgb(0.35, 0.35, 0.35) });
-
-    let y = 700;
-    const buyerName = k.firma || `${k.vorname || ''} ${k.nachname || ''}`.trim();
-    page.drawText(buyerName, { x: 56.7, y, size: 10.5, font: fontBold });
-    page.drawText(k.strasse || '', { x: 56.7, y: y - 14, size: 10, font });
-    page.drawText(`${k.plz || ''} ${k.ort || ''}`, { x: 56.7, y: y - 28, size: 10, font: fontBold });
-
-    // Rechter kompakter Metadaten-Block
-    page.drawText(`Datum: ${formatDateDE(b.belegdatum)}`, { x: 385, y: 700, size: 9.5, font });
-    page.drawText(`Rechnung-Nr.: ${b.belegnummer}`, { x: 385, y: 686, size: 9.5, font: fontBold });
-    page.drawText(`Kunden-Nr.: ${k.kundennummer || '-'}`, { x: 385, y: 672, size: 9.5, font });
-    page.drawText(`Leistung: ${leistText}`, { x: 385, y: 658, size: 9.5, font });
-
-    y = 605;
-    page.drawText(`Rechnung ${b.belegnummer}`, { x: 56.7, y, size: 13.5, font: fontBold });
-    y -= 24;
-
-    const minContentY = 92; // Sicherheitsabstand oberhalb der festen Fußzeile (y=66)
-
-    pos.forEach(p => {
-      const neededHeight = (p.beschreibung_anzeigen && p.beschreibung) ? 28 : 15;
-      if (y - neededHeight < minContentY) {
-        y = addNextPage();
+      // --- Schrift: bevorzugt eingebettet (PDF/A), sonst Helvetica ---
+      let font, fontBold;
+      try {
+        if (!window.fontkit) throw new Error('fontkit fehlt');
+        pdfDoc.registerFontkit(window.fontkit);
+        const [r, bd] = await Promise.all([EINV_FONT_REGULAR, EINV_FONT_BOLD].map(u => fetch(u).then(x => { if (!x.ok) throw new Error('Font'); return x.arrayBuffer(); })));
+        font = await pdfDoc.embedFont(r, { subset: true });
+        fontBold = await pdfDoc.embedFont(bd, { subset: true });
+      } catch (e) {
+        console.warn('Schrift-Einbettung nicht möglich, nutze Helvetica:', e);
+        font = await pdfDoc.embedFont(StandardFonts.Helvetica);
+        fontBold = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
       }
 
-      const grpLabel = p.gruppe && p.gruppe !== 'Allgemein' ? `[${p.gruppe}] ` : '';
-      const faktor = Number(p.mietfaktor) || 1;
-      const faktorStr = faktor !== 1 ? ` (Faktor ${formatNumberDE(faktor)})` : '';
-      page.drawText(`${p.position_nr}. ${grpLabel}${p.bezeichnung}${faktorStr}`.slice(0, 62), { x: 56.7, y, size: 9.5, font });
-      if (!nurGruppen) {
-        page.drawText(`${p.menge} ${p.einheit} × ${Number(p.einzelpreis_netto).toFixed(2)} €`, { x: 365, y, size: 9, font });
-        page.drawText(`${Number(p.gesamt_netto).toFixed(2)} €`, { x: 495, y, size: 9, font });
-      } else {
-        page.drawText(`${p.menge} ${p.einheit}`, { x: 470, y, size: 9, font });
-      }
-      y -= 13;
-      if (p.beschreibung_anzeigen && p.beschreibung) {
-        page.drawText(p.beschreibung.slice(0, 75), { x: 70, y, size: 8, font, color: rgb(0.4, 0.4, 0.4) });
-        y -= 13;
-      }
-    });
+      const T = s => String(s ?? '').replace(/[^\u0020-\u007E\u00A0-\u00FF\u20AC\u2013\u2014\u2022\u201E\u201C\u201D\u2018\u2019\u2026]/g, '?');
+      const wrap = (text, f, size, maxW) => {
+        const out = [];
+        String(text || '').split(/\r?\n/).forEach(par => {
+          const words = T(par).split(/\s+/).filter(Boolean);
+          if (!words.length) { out.push(''); return; }
+          let line = '';
+          words.forEach(w => {
+            const t = line ? line + ' ' + w : w;
+            if (f.widthOfTextAtSize(t, size) <= maxW) line = t;
+            else { if (line) out.push(line); line = w; }
+          });
+          out.push(line);
+        });
+        return out;
+      };
 
-    if (y - 60 < minContentY) {
-      y = addNextPage();
+      const L = 56.7, R = 544, PW = 595.28, PH = 841.89, MIN_Y = 92;
+      const grey = rgb(0.35, 0.35, 0.35), dark = rgb(0.06, 0.09, 0.16), purple = rgb(0.49, 0.13, 0.81);
+      const pages = [];
+      let page, y, inTable = false;
+
+      const txt = (s, x, yy, size = 9.5, f = font, color = dark) => page.drawText(T(s), { x, y: yy, size, font: f, color });
+      const rt = (s, xr, yy, size = 9.5, f = font, color = dark) => {
+        const t = T(s);
+        page.drawText(t, { x: xr - f.widthOfTextAtSize(t, size), y: yy, size, font: f, color });
+      };
+
+      const addPage = () => { page = pdfDoc.addPage([PW, PH]); pages.push(page); return page; };
+      const newPage = () => {
+        addPage();
+        txt(`${firmenDaten.firmenname || ''} • Rechnung ${b.belegnummer} (Fortsetzung)`, L, 800, 9, fontBold, grey);
+        page.drawLine({ start: { x: L, y: 794 }, end: { x: R, y: 794 }, thickness: 1, color: purple });
+        y = 775;
+      };
+
+      const tablePrice = { menge: 360, preis: 432, rab: 468, netto: R };
+      const descX = L + 26;
+      const descW = nurGruppen ? 330 : 215;
+      const drawTableHead = () => {
+        page.drawRectangle({ x: L, y: y - 4, width: R - L, height: 15, color: rgb(0.97, 0.98, 0.99) });
+        txt('Pos.', L + 2, y, 8, fontBold, grey);
+        txt('Bezeichnung / Leistung', descX, y, 8, fontBold, grey);
+        rt('Menge', tablePrice.menge, y, 8, fontBold, grey);
+        if (!nurGruppen) {
+          rt('Einzelpreis', tablePrice.preis, y, 8, fontBold, grey);
+          rt('Rab.', tablePrice.rab, y, 8, fontBold, grey);
+          rt('Netto', tablePrice.netto, y, 8, fontBold, grey);
+        }
+        y -= 16;
+      };
+      const ensure = (h) => { if (y - h < MIN_Y) { newPage(); if (inTable) drawTableHead(); } };
+
+      // ================= SEITE 1 =================
+      addPage();
+
+      // Logo (rechts oben)
+      try {
+        const logo = getActiveLogoSrc();
+        if (typeof logo === 'string' && logo.startsWith('data:image/png')) {
+          const img = await pdfDoc.embedPng(logo);
+          const sc = Math.min(212 / img.width, 57 / img.height, 1);
+          page.drawImage(img, { x: R - img.width * sc, y: 795 - img.height * sc, width: img.width * sc, height: img.height * sc });
+        } else if (typeof logo === 'string' && /^data:image\/jpe?g/.test(logo)) {
+          const img = await pdfDoc.embedJpg(logo);
+          const sc = Math.min(212 / img.width, 57 / img.height, 1);
+          page.drawImage(img, { x: R - img.width * sc, y: 795 - img.height * sc, width: img.width * sc, height: img.height * sc });
+        }
+      } catch (e) { console.warn('Logo nicht eingebettet:', e); }
+      page.drawLine({ start: { x: L, y: 735 }, end: { x: R, y: 735 }, thickness: 1.5, color: purple });
+
+      // Absenderzeile + Empfänger
+      txt(`${firmenDaten.firmenname || ''} • ${firmenDaten.strasse || ''} • ${firmenDaten.plz || ''} ${firmenDaten.ort || ''}`, L, 716, 7, font, grey);
+      page.drawLine({ start: { x: L, y: 712 }, end: { x: L + 240, y: 712 }, thickness: 0.5, color: grey });
+      let ay = 698;
+      const buyerName = k.firma || `${k.anrede || ''} ${k.vorname || ''} ${k.nachname || ''}`.trim();
+      if (k.firma) { txt(buyerName, L, ay, 10.5, fontBold); ay -= 14; }
+      const apName = k._ansprechpartner || (k.firma ? '' : '');
+      if (k.firma && apName) { txt(`z. Hd. ${apName}`, L, ay, 10); ay -= 13; }
+      if (!k.firma) { txt(buyerName, L, ay, 10.5, fontBold); ay -= 14; }
+      txt(k.strasse || '', L, ay, 10); ay -= 13;
+      txt(`${k.plz || ''} ${k.ort || ''}`, L, ay, 10, fontBold);
+
+      // Meta-Block rechts
+      const lVon = b.leistungsdatum_von || b.belegdatum;
+      const lBis = b.leistungsdatum_bis || k._leistungsdatum_bis || lVon;
+      const metaRows = [
+        ['Datum:', formatDateDE(b.belegdatum)],
+        ['Rechnung-Nr.:', b.belegnummer],
+        [lVon !== lBis ? 'Leistungszeitraum:' : 'Leistungsdatum:', formatLeistungszeitraumText(lVon, lBis)],
+        ['Kunden-Nr.:', k.kundennummer || ''],
+        ['Vorgang / Ref.:', k._referenz || '']
+      ].filter(r => r[1]);
+      let my = 710;
+      metaRows.forEach(([lab, val]) => {
+        txt(lab, 372, my, 9, font, grey);
+        rt(val, R, my, 9, lab === 'Rechnung-Nr.:' ? fontBold : font);
+        my -= 13;
+      });
+
+      // Betreff + Anschreiben
+      y = 625;
+      wrap(b.einleitungstext || `Rechnung ${b.belegnummer}`, fontBold, 13, R - L).forEach(line => {
+        ensure(18); txt(line, L, y, 13, fontBold); y -= 17;
+      });
+      y -= 4;
+      const briefResolved = replaceBelegPlaceholders(k._brieftext || '', {
+        belegnummer: b.belegnummer, belegdatum: b.belegdatum,
+        leistungsdatum_von: lVon, leistungsdatum_bis: lBis, kundeObj: k
+      });
+      if (briefResolved.trim()) {
+        wrap(briefResolved, font, 9.5, R - L).forEach(line => { ensure(13); txt(line, L, y, 9.5); y -= 12.5; });
+        y -= 6;
+      }
+
+      // ================= POSITIONEN =================
+      const groups = [];
+      const gmap = new Map();
+      d.lines.forEach(l => {
+        const g = l.gruppe || 'Allgemein';
+        if (!gmap.has(g)) { const o = { name: g, items: [], sum: 0 }; gmap.set(g, o); groups.push(o); }
+        const o = gmap.get(g); o.items.push(l); o.sum += l.total;
+      });
+      const showGroups = groups.length > 1 || groups[0].name !== 'Allgemein';
+
+      groups.forEach(g => {
+        ensure(60);
+        if (showGroups) {
+          page.drawRectangle({ x: L, y: y - 4, width: R - L, height: 16, color: rgb(0.93, 0.91, 0.99) });
+          txt(g.name, L + 4, y, 9.5, fontBold, rgb(0.19, 0.18, 0.51));
+          if (nurGruppen) rt(`Gruppenpreis Netto: ${formatEuro(r2(g.sum))}`, R - 4, y, 9, fontBold, rgb(0.19, 0.18, 0.51));
+          y -= 20;
+        }
+        inTable = true;
+        drawTableHead();
+
+        g.items.forEach((l, i) => {
+          const dl = wrap(l.bezeichnung || '(Position ohne Text)', font, 9, descW);
+          const sub = l.faktor !== 1 ? [`Mietfaktor ${formatNumberDE(l.faktor)}${l.miet_tage > 1 ? ` (${l.miet_tage} Tage)` : ''}`] : [];
+          const dsc = (l.beschreibung_anzeigen && l.beschreibung) ? wrap(l.beschreibung, font, 8, descW - 6) : [];
+          const h = dl.length * 12 + sub.length * 11 + dsc.length * 10 + 6;
+          ensure(h);
+
+          let ry = y;
+          txt(String(i + 1), L + 2, ry, 9);
+          dl.forEach((line, li) => { txt(line, descX, ry - li * 12, 9); });
+          const mengeTxt = l.einheit === 'Pauschale' ? 'Pauschale' : `${formatNumberDE(l.menge)} ${l.einheit}`;
+          rt(mengeTxt, tablePrice.menge, ry, 9);
+          if (!nurGruppen) {
+            rt(formatEuro(l.einzelpreis_netto), tablePrice.preis, ry, 9);
+            rt(Number(l.rabatt_prozent) > 0 ? `${formatNumberDE(l.rabatt_prozent)}%` : '-', tablePrice.rab, ry, 9);
+            rt(formatEuro(l.total), tablePrice.netto, ry, 9, fontBold);
+          }
+          let dy = ry - dl.length * 12;
+          sub.forEach(s => { txt(s, descX + 6, dy + 1, 8, font, grey); dy -= 11; });
+          dsc.forEach(s => { txt(s, descX + 6, dy + 1, 8, font, grey); dy -= 10; });
+          y -= h;
+          page.drawLine({ start: { x: L, y: y + 3 }, end: { x: R, y: y + 3 }, thickness: 0.4, color: rgb(0.88, 0.9, 0.93) });
+        });
+
+        if (showGroups && !nurGruppen) {
+          ensure(18);
+          rt(`Zwischensumme ${g.name} (Netto): ${formatEuro(r2(g.sum))}`, R, y - 4, 9, fontBold, rgb(0.19, 0.18, 0.51));
+          y -= 18;
+        }
+        inTable = false;
+        y -= 6;
+      });
+
+      // ================= SUMMEN =================
+      const sumRows = [];
+      if (d.allowTotal > 0) {
+        sumRows.push(['Zwischensumme Netto:', formatEuro(d.lineTotal), false]);
+        sumRows.push([`Abzgl. Kunden-/Gesamtrabatt (${formatNumberDE(d.docRab)} %):`, `- ${formatEuro(d.allowTotal)}`, false]);
+      }
+      sumRows.push(['Summe Netto:', formatEuro(d.basisTotal), false]);
+      d.taxes.forEach(t => sumRows.push([`Umsatzsteuer ${formatNumberDE(t.rate)} % auf ${formatEuro(t.basis)}:`, formatEuro(t.tax), false]));
+      sumRows.push(['Gesamtbetrag Brutto:', formatEuro(d.grand), true]);
+
+      ensure(sumRows.length * 15 + 20);
+      y -= 4;
+      sumRows.forEach(([lab, val, strong]) => {
+        if (strong) { page.drawLine({ start: { x: 300, y: y + 12 }, end: { x: R, y: y + 12 }, thickness: 1.2, color: purple }); }
+        rt(val, R, y, strong ? 11 : 9.5, strong ? fontBold : font);
+        rt(lab, R - 100, y, strong ? 11 : 9.5, strong ? fontBold : font, strong ? dark : grey);
+        y -= strong ? 18 : 14;
+      });
+      y -= 8;
+
+      // ================= SCHLUSSTEXT =================
+      const schluss = replaceBelegPlaceholders(b.schlusstext || '', {
+        belegnummer: b.belegnummer, belegdatum: b.belegdatum,
+        leistungsdatum_von: lVon, leistungsdatum_bis: lBis, kundeObj: k
+      });
+      if (schluss.trim()) {
+        wrap(schluss, font, 9.5, R - L).forEach(line => { ensure(13); txt(line, L, y, 9.5); y -= 12.5; });
+        y -= 8;
+      }
+      if (firmenDaten.inhaber) {
+        ensure(30);
+        txt('Mit freundlichen Grüßen', L, y, 9.5, fontBold); y -= 12.5;
+        txt(firmenDaten.inhaber, L, y, 9.5, fontBold);
+      }
+
+      // ================= FUSSZEILE AUF JEDER SEITE =================
+      pages.forEach((pg, idx) => {
+        page = pg;
+        page.drawLine({ start: { x: L, y: 70 }, end: { x: R, y: 70 }, thickness: 1.5, color: purple });
+        txt(`${firmenDaten.firmenname || ''} | Inh.: ${firmenDaten.inhaber || '-'} | ${firmenDaten.strasse || ''}, ${firmenDaten.plz || ''} ${firmenDaten.ort || ''}`, L, 58, 7, font, grey);
+        txt(`Tel.: ${firmenDaten.telefon || '-'} | E-Mail: ${firmenDaten.email || '-'} | Web: ${firmenDaten.webseite || '-'}`, L, 48, 7, font, grey);
+        txt(`${firmenDaten.bankname ? firmenDaten.bankname + ' | ' : ''}IBAN: ${firmenDaten.iban || '-'}${firmenDaten.bic ? ' | BIC: ' + firmenDaten.bic : ''} | ${firmenDaten.ust_id ? 'USt-IdNr.: ' + firmenDaten.ust_id : 'St.-Nr.: ' + (firmenDaten.steuernummer || '-')}`, L, 38, 7, font, grey);
+        rt(`Seite ${idx + 1} / ${pages.length}`, R, 26, 8, fontBold, rgb(0.26, 0.22, 0.79));
+      });
+
+      // ================= ZUGFeRD / FACTUR-X: XML-ANHANG + XMP =================
+      const ctx = pdfDoc.context;
+      const now = new Date();
+      const title = `Rechnung ${b.belegnummer}`;
+      const producer = 'DK CUSTOM Warenwirtschaft (pdf-lib)';
+      pdfDoc.setTitle(title);
+      pdfDoc.setAuthor(firmenDaten.firmenname || 'DK CUSTOM');
+      pdfDoc.setProducer(producer);
+      pdfDoc.setCreator(producer);
+      pdfDoc.setCreationDate(now);
+      pdfDoc.setModificationDate(now);
+
+      const xmlBytes = new TextEncoder().encode(xmlString);
+      const efStream = ctx.flateStream(xmlBytes, {
+        Type: 'EmbeddedFile',
+        Subtype: 'text/xml',
+        Params: { Size: xmlBytes.length, ModDate: PDFString.fromDate(now) }
+      });
+      const efRef = ctx.register(efStream);
+      const fileSpec = ctx.obj({
+        Type: 'Filespec',
+        F: PDFString.of('factur-x.xml'),
+        UF: PDFHexString.fromText('factur-x.xml'),
+        Desc: PDFHexString.fromText('Factur-X / ZUGFeRD Rechnungsdaten (EN 16931)'),
+        AFRelationship: 'Alternative',
+        EF: { F: efRef, UF: efRef }
+      });
+      const fsRef = ctx.register(fileSpec);
+      pdfDoc.catalog.set(PDFName.of('AF'), ctx.obj([fsRef]));
+      pdfDoc.catalog.set(PDFName.of('Names'), ctx.obj({
+        EmbeddedFiles: { Names: [PDFHexString.fromText('factur-x.xml'), fsRef] }
+      }));
+
+      const xmpBytes = new TextEncoder().encode(buildFacturXXmp(title, firmenDaten.firmenname || 'DK CUSTOM', producer, now.toISOString()));
+      const metaStream = ctx.stream(xmpBytes, { Type: 'Metadata', Subtype: 'XML', Length: xmpBytes.length });
+      pdfDoc.catalog.set(PDFName.of('Metadata'), ctx.register(metaStream));
+
+      const pdfBytes = await pdfDoc.save({ useObjectStreams: false });
+      const blob = new Blob([pdfBytes], { type: 'application/pdf' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `${b.belegnummer}_ZUGFeRD.pdf`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 2000);
+      showToast('⚡ E-Rechnung (ZUGFeRD PDF + XML) heruntergeladen!');
+    } catch (err) {
+      console.error('ZUGFeRD-Export fehlgeschlagen:', err);
+      alert('E-Rechnung konnte nicht erstellt werden: ' + (err && err.message ? err.message : err));
     }
-
-    y -= 12;
-    page.drawText(`Summe Netto: ${Number(b.summe_netto).toFixed(2)} €`, { x: 395, y, size: 10, font });
-    y -= 15;
-    page.drawText(`Umsatzsteuer: ${Number(b.summe_mwst).toFixed(2)} €`, { x: 395, y, size: 10, font });
-    y -= 18;
-    page.drawText(`Gesamt Brutto: ${Number(b.summe_brutto).toFixed(2)} €`, { x: 395, y, size: 11, font: fontBold });
-
-    const xmlBytes = new TextEncoder().encode(xmlString);
-    await pdfDoc.attach(xmlBytes, 'factur-x.xml', {
-      mimeType: 'text/xml',
-      description: 'ZUGFeRD / Factur-X EN 16931 E-Rechnung',
-      creationDate: new Date(),
-      modificationDate: new Date()
-    });
-
-    const pdfBytes = await pdfDoc.save();
-    const blob = new Blob([pdfBytes], { type: 'application/pdf' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `${b.belegnummer}_ZUGFeRD.pdf`;
-    a.click();
-    URL.revokeObjectURL(url);
-    showToast('⚡ E-Rechnung (ZUGFeRD PDF + XML) heruntergeladen!');
   }
 
   // =========================================================================
