@@ -635,6 +635,10 @@
             <input type="text" id="beleg-suche" placeholder="Suchen..." oninput="renderBelege()" />
           </div>
         </div>
+        <label style="display:inline-flex; align-items:center; gap:8px; margin:-4px 0 14px 0; cursor:pointer; color:var(--muted); font-size:0.85rem;">
+          <input type="checkbox" id="beleg-zeige-ausgeblendet" onchange="renderBelege()" />
+          Ausgeblendete Angebote anzeigen <span id="beleg-ausgeblendet-info" style="color:#a5b4fc;"></span>
+        </label>
 
         <!-- EDITOR + LIVE DIN-5008 BRIEFKOPF VORSCHAU -->
         <div id="beleg-editor-box" class="collapsible-box">
@@ -2632,7 +2636,7 @@
     document.getElementById('miete-artikel').innerHTML = mietArtikel.map(a => `<option value="${a.id}">${escHtml(a.bezeichnung)} (${formatEuro(a.preis_netto)})</option>`).join('')
       || '<option value="">Bitte erst Artikel mit Kategorie "Vermietung" anlegen</option>';
 
-    const angebote = belegeListe.filter(b => b.beleg_typ === 'angebot');
+    const angebote = belegeListe.filter(b => b.beleg_typ === 'angebot' && !isBelegAusgeblendet(b));
     document.getElementById('angebot-import-select').innerHTML = `<option value="">-- Angebot in Rechnung übernehmen --</option>` +
       angebote.map(ag => {
         const k = ag.kunde_snapshot && ag.kunde_snapshot.kundennummer ? ag.kunde_snapshot : kundenListe.find(x => x.id === ag.kunde_id);
@@ -3783,6 +3787,7 @@
 
     const kundeSnapshot = {
       ...baseKunde,
+      ...(isBelegAusgeblendet(belegeListe.find(x => x.id === document.getElementById('beleg-id').value)) ? { _ausgeblendet: true } : {}),
       _referenz: document.getElementById('beleg-referenz').value.trim(),
       _ansprechpartner: document.getElementById('beleg-ansprechpartner').value.trim(),
       _brieftext: replaceBelegPlaceholders(document.getElementById('beleg-brieftext').value, {
@@ -3903,14 +3908,45 @@
     await reloadAllData();
   });
 
+  // Ausblenden von Angeboten: Flag steckt im bereits vorhandenen JSON-Feld kunde_snapshot (keine SQL-Änderung nötig)
+  function isBelegAusgeblendet(b) {
+    return Boolean(b && b.kunde_snapshot && b.kunde_snapshot._ausgeblendet);
+  }
+
+  async function toggleBelegAusgeblendet(id) {
+    const b = belegeListe.find(x => x.id === id);
+    if (!b) return;
+    const snap = { ...(b.kunde_snapshot || {}) };
+    const hide = !snap._ausgeblendet;
+    if (hide) snap._ausgeblendet = true; else delete snap._ausgeblendet;
+    const { error } = await sb.from('belege').update({ kunde_snapshot: snap }).eq('id', id);
+    if (error) return alert('Fehler: ' + error.message);
+    b.kunde_snapshot = snap;
+    showToast(hide ? '🙈 Angebot ausgeblendet' : '👁️ Angebot wieder eingeblendet');
+    renderBelege();
+    const sel = document.getElementById('angebot-import-select');
+    if (sel) {
+      sel.innerHTML = `<option value="">-- Angebot in Rechnung übernehmen --</option>` +
+        belegeListe.filter(x => x.beleg_typ === 'angebot' && !isBelegAusgeblendet(x)).map(ag => {
+          const k = ag.kunde_snapshot && ag.kunde_snapshot.kundennummer ? ag.kunde_snapshot : kundenListe.find(y => y.id === ag.kunde_id);
+          return `<option value="${ag.id}">${escHtml(ag.belegnummer)} (${escHtml(getKundenAnzeigeName(k))} – ${formatEuro(ag.summe_brutto)})</option>`;
+        }).join('');
+    }
+  }
+
   function renderBelege() {
     const fTyp = document.getElementById('beleg-filter-typ').value;
     const fStat = document.getElementById('beleg-filter-status').value;
     const q = document.getElementById('beleg-suche').value.toLowerCase();
     const tbody = document.getElementById('belege-tbody');
     tbody.innerHTML = '';
+    const zeigeAusgeblendet = Boolean(document.getElementById('beleg-zeige-ausgeblendet')?.checked);
+    const anzahlAusgeblendet = belegeListe.filter(isBelegAusgeblendet).length;
+    const infoEl = document.getElementById('beleg-ausgeblendet-info');
+    if (infoEl) infoEl.textContent = anzahlAusgeblendet ? `(${anzahlAusgeblendet} ausgeblendet)` : '';
 
     belegeListe
+      .filter(b => zeigeAusgeblendet || !isBelegAusgeblendet(b))
       .filter(b => (fTyp === 'alle' || b.beleg_typ === fTyp) && (fStat === 'alle' || b.status === fStat))
       .filter(b => {
         const k = b.kunde_snapshot || kundenListe.find(x => x.id === b.kunde_id);
@@ -3922,7 +3958,9 @@
         const isAngebot = b.beleg_typ === 'angebot';
         const typText = isRechnung ? 'Rechnung' : isAngebot ? 'Angebot' : 'Schreiben';
 
+        const hidden = isBelegAusgeblendet(b);
         const tr = document.createElement('tr');
+        if (hidden) tr.style.opacity = '0.55';
         tr.innerHTML = `
           <td><span class="pill pill-${b.beleg_typ}">${typText}</span></td>
           <td><strong>${escHtml(b.belegnummer)}</strong></td>
@@ -3936,6 +3974,7 @@
             <button class="btn btn-secondary btn-sm" onclick="printBeleg('${b.id}')">🖨️ Briefkopf Druck</button>
             ${isRechnung ? `<button class="btn btn-success btn-sm" onclick="downloadZugferdPdf('${b.id}')">⚡ E-Rechnung (ZUGFeRD)</button>` : ''}
             ${isAngebot ? `<button class="btn btn-warning btn-sm" onclick="convertAngebotToRechnung('${b.id}')">→ Rechnung</button>` : ''}
+            ${isAngebot ? `<button class="btn btn-secondary btn-sm" onclick="toggleBelegAusgeblendet('${b.id}')">${hidden ? '👁️ Einblenden' : '🙈 Ausblenden'}</button>` : ''}
             ${isRechnung && b.status === 'offen' ? `<button class="btn btn-secondary btn-sm" onclick="markBelegBezahlt('${b.id}')">✓ Bezahlt</button>` : ''}
           </td>
         `;
