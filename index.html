@@ -4548,201 +4548,229 @@ ${prop('ConformanceLevel', 'The conformance level of the embedded Factur-X data'
         return out;
       };
 
-      const L = 56.7, R = 544, PW = 595.28, PH = 841.89, MIN_Y = 92;
-      const grey = rgb(0.35, 0.35, 0.35), dark = rgb(0.06, 0.09, 0.16), purple = rgb(0.49, 0.13, 0.81);
+      // ===== Layout wie in der Druckansicht (DIN-A4, Koordinaten von oben gemessen) =====
+      const L = 56.7, R = 544.3, PW = 595.28, PH = 841.89, LIM_T = 746;
+      const C = {
+        ink: rgb(0.059, 0.09, 0.165), grey: rgb(0.278, 0.333, 0.412), mute: rgb(0.392, 0.455, 0.545),
+        purple: rgb(0.494, 0.133, 0.808), indigo: rgb(0.263, 0.22, 0.792), navy: rgb(0.118, 0.106, 0.294),
+        deep: rgb(0.192, 0.18, 0.506), line: rgb(0.886, 0.91, 0.941), line2: rgb(0.796, 0.835, 0.882),
+        row: rgb(0.2, 0.255, 0.333), ind2: rgb(0.31, 0.275, 0.898)
+      };
       const pages = [];
-      let page, y, inTable = false;
+      let page, t;
+      const Y = tt => PH - tt;
+      const txt = (s, x, tt, size = 9.5, f = font, color = C.ink) => page.drawText(T(s), { x, y: Y(tt), size, font: f, color });
+      const tw = (s, size, f = font) => f.widthOfTextAtSize(T(s), size);
+      const rt = (s, xr, tt, size = 9.5, f = font, color = C.ink) => txt(s, xr - tw(s, size, f), tt, size, f, color);
+      const hl = (x1, x2, tt, th, color) => page.drawLine({ start: { x: x1, y: Y(tt) }, end: { x: x2, y: Y(tt) }, thickness: th, color });
+      const box = (x, tt, w, h, color) => page.drawRectangle({ x, y: Y(tt + h), width: w, height: h, color });
+      const addPage = () => { page = pdfDoc.addPage([PW, PH]); pages.push(page); };
 
-      const txt = (s, x, yy, size = 9.5, f = font, color = dark) => page.drawText(T(s), { x, y: yy, size, font: f, color });
-      const rt = (s, xr, yy, size = 9.5, f = font, color = dark) => {
-        const t = T(s);
-        page.drawText(t, { x: xr - f.widthOfTextAtSize(t, size), y: yy, size, font: f, color });
-      };
-
-      const addPage = () => { page = pdfDoc.addPage([PW, PH]); pages.push(page); return page; };
-      const newPage = () => {
-        addPage();
-        txt(`${firmenDaten.firmenname || ''} • Rechnung ${b.belegnummer} (Fortsetzung)`, L, 800, 9, fontBold, grey);
-        page.drawLine({ start: { x: L, y: 794 }, end: { x: R, y: 794 }, thickness: 1, color: purple });
-        y = 775;
-      };
-
-      const tablePrice = { menge: 360, preis: 432, rab: 468, netto: R };
-      const descX = L + 26;
-      const descW = nurGruppen ? 330 : 215;
-      const drawTableHead = () => {
-        page.drawRectangle({ x: L, y: y - 4, width: R - L, height: 15, color: rgb(0.97, 0.98, 0.99) });
-        txt('Pos.', L + 2, y, 8, fontBold, grey);
-        txt('Bezeichnung / Leistung', descX, y, 8, fontBold, grey);
-        rt('Menge', tablePrice.menge, y, 8, fontBold, grey);
-        if (!nurGruppen) {
-          rt('Einzelpreis', tablePrice.preis, y, 8, fontBold, grey);
-          rt('Rab.', tablePrice.rab, y, 8, fontBold, grey);
-          rt('Netto', tablePrice.netto, y, 8, fontBold, grey);
-        }
-        y -= 16;
-      };
-      const ensure = (h) => { if (y - h < MIN_Y) { newPage(); if (inTable) drawTableHead(); } };
-
-      // ================= SEITE 1 =================
-      addPage();
-
-      // Logo (rechts oben)
-      try {
-        const logo = getActiveLogoSrc();
-        if (typeof logo === 'string' && logo.startsWith('data:image/png')) {
-          const img = await pdfDoc.embedPng(logo);
-          const sc = Math.min(212 / img.width, 57 / img.height, 1);
-          page.drawImage(img, { x: R - img.width * sc, y: 795 - img.height * sc, width: img.width * sc, height: img.height * sc });
-        } else if (typeof logo === 'string' && /^data:image\/jpe?g/.test(logo)) {
-          const img = await pdfDoc.embedJpg(logo);
-          const sc = Math.min(212 / img.width, 57 / img.height, 1);
-          page.drawImage(img, { x: R - img.width * sc, y: 795 - img.height * sc, width: img.width * sc, height: img.height * sc });
-        }
-      } catch (e) { console.warn('Logo nicht eingebettet:', e); }
-      page.drawLine({ start: { x: L, y: 735 }, end: { x: R, y: 735 }, thickness: 1.5, color: purple });
-
-      // Absenderzeile + Empfänger
-      txt(`${firmenDaten.firmenname || ''} • ${firmenDaten.strasse || ''} • ${firmenDaten.plz || ''} ${firmenDaten.ort || ''}`, L, 716, 7, font, grey);
-      page.drawLine({ start: { x: L, y: 712 }, end: { x: L + 240, y: 712 }, thickness: 0.5, color: grey });
-      let ay = 698;
-      const buyerName = k.firma || `${k.anrede || ''} ${k.vorname || ''} ${k.nachname || ''}`.trim();
-      if (k.firma) { txt(buyerName, L, ay, 10.5, fontBold); ay -= 14; }
-      const apName = k._ansprechpartner || (k.firma ? '' : '');
-      if (k.firma && apName) { txt(`z. Hd. ${apName}`, L, ay, 10); ay -= 13; }
-      if (!k.firma) { txt(buyerName, L, ay, 10.5, fontBold); ay -= 14; }
-      txt(k.strasse || '', L, ay, 10); ay -= 13;
-      txt(`${k.plz || ''} ${k.ort || ''}`, L, ay, 10, fontBold);
-
-      // Meta-Block rechts
+      const firmaName = firmenDaten.firmenname || 'DK CUSTOM';
       const lVon = b.leistungsdatum_von || b.belegdatum;
       const lBis = b.leistungsdatum_bis || k._leistungsdatum_bis || lVon;
+      const isRange = Boolean(lVon && lBis && lVon !== lBis);
+
+      const drawNextHeader = () => {
+        txt(firmaName, L, 58, 8.5, fontBold, C.grey);
+        txt(` • Rechnung ${b.belegnummer}`, L + tw(firmaName, 8.5, fontBold), 58, 8.5, font, C.grey);
+        rt(`Fortsetzung (${formatDateDE(b.belegdatum)})`, R, 58, 8.5, font, C.grey);
+        hl(L, R, 65, 1.5, C.purple);
+        t = 80;
+      };
+      const newPage = () => { addPage(); drawNextHeader(); };
+
+      // ---------- Seite 1: Briefkopf ----------
+      addPage();
+      try {
+        const logo = getActiveLogoSrc();
+        let img = null;
+        if (typeof logo === 'string' && logo.startsWith('data:image/png')) img = await pdfDoc.embedPng(logo);
+        else if (typeof logo === 'string' && /^data:image\/jpe?g/.test(logo)) img = await pdfDoc.embedJpg(logo);
+        if (img) {
+          const sc = Math.min(0.75, 212 / img.width, 57 / img.height);
+          const w = img.width * sc, h = img.height * sc;
+          page.drawImage(img, { x: R - w, y: Y(65 + h / 2), width: w, height: h });
+        }
+      } catch (e) { console.warn('Logo nicht eingebettet:', e); }
+      hl(L, R, 96, 1.5, C.purple);
+
+      // Absenderzeile + Empfänger
+      txt(`${firmaName} • ${firmenDaten.strasse || ''} • ${firmenDaten.plz || ''} ${firmenDaten.ort || ''}`, L, 122, 7.5, font, C.grey);
+      hl(L, L + 241, 127.5, 0.75, rgb(0.58, 0.64, 0.72));
+      const ap = k._ansprechpartner || '';
+      const person = `${k.anrede || ''} ${k.vorname || ''} ${k.nachname || ''}`.trim();
+      const addr = [];
+      if (k.firma) addr.push([k.firma, true]);
+      if (ap) addr.push([`z. Hd. ${ap}`, false]); else if (person) addr.push([person, !k.firma]);
+      addr.push([k.strasse || '', false]);
+      addr.push([`${k.plz || ''} ${k.ort || ''}`, true]);
+      addr.forEach(([s, bold], i) => txt(s, L, 141 + i * 13.8 + (i === addr.length - 1 ? 2 : 0), 10, bold ? fontBold : font));
+
+      // Meta-Tabelle rechts (mit Trennlinien)
       const metaRows = [
-        ['Datum:', formatDateDE(b.belegdatum)],
-        ['Rechnung-Nr.:', b.belegnummer],
-        [lVon !== lBis ? 'Leistungszeitraum:' : 'Leistungsdatum:', formatLeistungszeitraumText(lVon, lBis)],
-        ['Kunden-Nr.:', k.kundennummer || ''],
-        ['Vorgang / Ref.:', k._referenz || '']
+        ['Datum:', formatDateDE(b.belegdatum), true, C.ink],
+        ['Rechnung-Nr.:', b.belegnummer, true, C.indigo],
+        [isRange ? 'Leistungszeitraum:' : 'Leistungsdatum:', formatLeistungszeitraumText(lVon, lBis), false, C.ink],
+        ['Kunden-Nr.:', k.kundennummer || '', false, C.ink],
+        ['Vorgang / Ref.:', k._referenz || b.belegnummer, false, C.ink],
+        ['Ansprechpartner:', ap, false, C.ink]
       ].filter(r => r[1]);
-      let my = 710;
-      metaRows.forEach(([lab, val]) => {
-        txt(lab, 372, my, 9, font, grey);
-        rt(val, R, my, 9, lab === 'Rechnung-Nr.:' ? fontBold : font);
-        my -= 13;
+      const MX = R - 210;
+      metaRows.forEach(([lab, val, bold, col], i) => {
+        const base = 124.3 + i * 17;
+        txt(lab, MX, base, 9, font, C.mute);
+        rt(val, R, base, 9, bold ? fontBold : font, col);
+        hl(MX, R, base + 7.2, 0.75, C.row);
       });
 
       // Betreff + Anschreiben
-      y = 625;
-      wrap(b.einleitungstext || `Rechnung ${b.belegnummer}`, fontBold, 13, R - L).forEach(line => {
-        ensure(18); txt(line, L, y, 13, fontBold); y -= 17;
+      t = 263;
+      wrap(b.einleitungstext || 'Rechnung', fontBold, 12.5, R - L).forEach((line, i) => {
+        txt(line, L, t, 12.5, fontBold, C.navy); t += 15;
       });
-      y -= 4;
+      t -= 15;
+      hl(L, R, t + 9.5, 0.75, C.line);
+      t += 9.5;
       const briefResolved = replaceBelegPlaceholders(k._brieftext || '', {
         belegnummer: b.belegnummer, belegdatum: b.belegdatum,
         leistungsdatum_von: lVon, leistungsdatum_bis: lBis, kundeObj: k
       });
       if (briefResolved.trim()) {
-        wrap(briefResolved, font, 9.5, R - L).forEach(line => { ensure(13); txt(line, L, y, 9.5); y -= 12.5; });
-        y -= 6;
+        t += 6;
+        wrap(briefResolved, font, 9.8, R - L).forEach(line => {
+          if (t + 16 > LIM_T) newPage();
+          txt(line, L, t + 10, 9.8); t += 14.2;
+        });
+        t += 4;
       }
+      t += 8;
 
-      // ================= POSITIONEN =================
+      // ---------- Positionen in Gruppen ----------
+      const mm = v => v * 2.8346;
+      const cw = (nurGruppen ? [11, 109, 24, 28] : [9, 60, 18, 28, 21, 12, 24]).map(mm);
+      const edges = [L]; cw.forEach(w => edges.push(edges[edges.length - 1] + w));
+      const PAD = 4.5;
+      const heads = nurGruppen ? ['Pos.', 'Bezeichnung / Leistung', 'Menge', 'Faktor']
+        : ['Pos.', 'Bezeichnung / Leistung', 'Menge', 'Faktor', 'Basispreis', 'Rab.', 'Netto'];
+
+      const drawGroupHead = (g, cont) => {
+        box(L, t, R - L, 16.5, rgb(0.945, 0.941, 0.992));
+        box(L, t, 2.25, 16.5, C.purple);
+        txt(g.name + (cont ? ' (Fortsetzung)' : ''), L + 8.2, t + 11.5, 9.5, fontBold, C.deep);
+        if (nurGruppen) rt(`Gruppenpreis Netto: ${formatEuro(r2(g.sum))}`, R - 4, t + 11.5, 9.5, fontBold, C.deep);
+        t += 16.5;
+        box(L, t, R - L, 21.4, rgb(0.973, 0.98, 0.988));
+        hl(L, R, t + 21.4, 0.75, C.line2);
+        heads.forEach((hd, i) => {
+          if (i < 2) txt(hd, edges[i] + PAD, t + 14.3, 8, fontBold, C.grey);
+          else rt(hd, edges[i + 1] - PAD, t + 14.3, 8, fontBold, C.grey);
+        });
+        t += 22.2;
+      };
+
       const groups = [];
       const gmap = new Map();
       d.lines.forEach(l => {
-        const g = l.gruppe || 'Allgemein';
-        if (!gmap.has(g)) { const o = { name: g, items: [], sum: 0 }; gmap.set(g, o); groups.push(o); }
-        const o = gmap.get(g); o.items.push(l); o.sum += l.total;
+        const gname = l.gruppe || 'Allgemein';
+        if (!gmap.has(gname)) { const o = { name: gname, items: [], sum: 0 }; gmap.set(gname, o); groups.push(o); }
+        const o = gmap.get(gname); o.items.push(l); o.sum += l.total;
       });
-      const showGroups = groups.length > 1 || groups[0].name !== 'Allgemein';
 
+      const nameW = cw[1] - 2 * PAD;
       groups.forEach(g => {
-        ensure(60);
-        if (showGroups) {
-          page.drawRectangle({ x: L, y: y - 4, width: R - L, height: 16, color: rgb(0.93, 0.91, 0.99) });
-          txt(g.name, L + 4, y, 9.5, fontBold, rgb(0.19, 0.18, 0.51));
-          if (nurGruppen) rt(`Gruppenpreis Netto: ${formatEuro(r2(g.sum))}`, R - 4, y, 9, fontBold, rgb(0.19, 0.18, 0.51));
-          y -= 20;
-        }
-        inTable = true;
-        drawTableHead();
+        const firstH = 25;
+        if (t + 16.5 + 22.2 + firstH > LIM_T) newPage();
+        drawGroupHead(g, false);
 
         g.items.forEach((l, i) => {
-          const dl = wrap(l.bezeichnung || '(Position ohne Text)', font, 9, descW);
-          const sub = l.faktor !== 1 ? [`Mietfaktor ${formatNumberDE(l.faktor)}${l.miet_tage > 1 ? ` (${l.miet_tage} Tage)` : ''}`] : [];
-          const dsc = (l.beschreibung_anzeigen && l.beschreibung) ? wrap(l.beschreibung, font, 8, descW - 6) : [];
-          const h = dl.length * 12 + sub.length * 11 + dsc.length * 10 + 6;
-          ensure(h);
+          const nl = wrap(l.bezeichnung || '(Position ohne Text)', font, 9, nameW);
+          const dl = (l.beschreibung_anzeigen && l.beschreibung) ? wrap(l.beschreibung, font, 8, nameW - 7.5) : [];
+          const rowH = 6 + 13 * nl.length + (dl.length ? 1.5 + 10.4 * dl.length : 0);
+          if (t + rowH > LIM_T) { newPage(); drawGroupHead(g, true); }
 
-          let ry = y;
-          txt(String(i + 1), L + 2, ry, 9);
-          dl.forEach((line, li) => { txt(line, descX, ry - li * 12, 9); });
+          const base = t + 12.7;
+          txt(String(i + 1), edges[0] + PAD, base, 9);
+          nl.forEach((s, li) => txt(s, edges[1] + PAD, base + li * 13, 9));
+          dl.forEach((s, li) => txt(s, edges[1] + PAD + 7.5, t + 3 + 13 * nl.length + 1.5 + 8.3 + li * 10.4, 8, font, C.mute));
+
+          const faktorTxt = l.faktor !== 1
+            ? (l.miet_tage > 1 ? `${l.miet_tage} Tage (× ${formatNumberDE(l.faktor)})` : `× ${formatNumberDE(l.faktor)}`) : '-';
           const mengeTxt = l.einheit === 'Pauschale' ? 'Pauschale' : `${formatNumberDE(l.menge)} ${l.einheit}`;
-          rt(mengeTxt, tablePrice.menge, ry, 9);
+          rt(mengeTxt, edges[3] - PAD, base, 9);
+          rt(faktorTxt, edges[4] - PAD, base, 9);
           if (!nurGruppen) {
-            rt(formatEuro(l.einzelpreis_netto), tablePrice.preis, ry, 9);
-            rt(Number(l.rabatt_prozent) > 0 ? `${formatNumberDE(l.rabatt_prozent)}%` : '-', tablePrice.rab, ry, 9);
-            rt(formatEuro(l.total), tablePrice.netto, ry, 9, fontBold);
+            rt(formatEuro(l.einzelpreis_netto), edges[5] - PAD, base, 9);
+            rt(Number(l.rabatt_prozent) > 0 ? `${formatNumberDE(l.rabatt_prozent)}%` : '-', edges[6] - PAD, base, 9);
+            rt(formatEuro(l.total), edges[7] - PAD, base, 9, fontBold);
           }
-          let dy = ry - dl.length * 12;
-          sub.forEach(s => { txt(s, descX + 6, dy + 1, 8, font, grey); dy -= 11; });
-          dsc.forEach(s => { txt(s, descX + 6, dy + 1, 8, font, grey); dy -= 10; });
-          y -= h;
-          page.drawLine({ start: { x: L, y: y + 3 }, end: { x: R, y: y + 3 }, thickness: 0.4, color: rgb(0.88, 0.9, 0.93) });
+          t += rowH;
+          hl(L, R, t, 0.75, C.line);
         });
 
-        if (showGroups && !nurGruppen) {
-          ensure(18);
-          rt(`Zwischensumme ${g.name} (Netto): ${formatEuro(r2(g.sum))}`, R, y - 4, 9, fontBold, rgb(0.19, 0.18, 0.51));
-          y -= 18;
-        }
-        inTable = false;
-        y -= 6;
+        // Gruppen-Zwischensumme
+        if (t + 19 > LIM_T) newPage();
+        box(L, t, R - L, 19, rgb(0.98, 0.961, 1));
+        hl(L, R, t + 19, 0.75, rgb(0.914, 0.835, 1));
+        rt(`${nurGruppen ? `Gesamtpreis Gruppe „${g.name}“ (Netto):` : `Zwischensumme ${g.name} (Netto):`} ${formatEuro(r2(g.sum))}`, R - 5.2, t + 13, 9, fontBold, C.deep);
+        t += 19 + 7.5;
       });
 
-      // ================= SUMMEN =================
+      // ---------- Summenblock ----------
       const sumRows = [];
       if (d.allowTotal > 0) {
-        sumRows.push(['Zwischensumme Netto:', formatEuro(d.lineTotal), false]);
-        sumRows.push([`Abzgl. Kunden-/Gesamtrabatt (${formatNumberDE(d.docRab)} %):`, `- ${formatEuro(d.allowTotal)}`, false]);
+        sumRows.push(['Zwischensumme Netto:', formatEuro(d.lineTotal), C.grey]);
+        sumRows.push([`Abzüglich Kunden-/Gesamtrabatt (${formatNumberDE(d.docRab)}%):`, `- ${formatEuro(d.allowTotal)}`, C.purple]);
       }
-      sumRows.push(['Summe Netto:', formatEuro(d.basisTotal), false]);
-      d.taxes.forEach(t => sumRows.push([`Umsatzsteuer ${formatNumberDE(t.rate)} % auf ${formatEuro(t.basis)}:`, formatEuro(t.tax), false]));
-      sumRows.push(['Gesamtbetrag Brutto:', formatEuro(d.grand), true]);
-
-      ensure(sumRows.length * 15 + 20);
-      y -= 4;
-      sumRows.forEach(([lab, val, strong]) => {
-        if (strong) { page.drawLine({ start: { x: 300, y: y + 12 }, end: { x: R, y: y + 12 }, thickness: 1.2, color: purple }); }
-        rt(val, R, y, strong ? 11 : 9.5, strong ? fontBold : font);
-        rt(lab, R - 100, y, strong ? 11 : 9.5, strong ? fontBold : font, strong ? dark : grey);
-        y -= strong ? 18 : 14;
+      sumRows.push(['Summe Netto:', formatEuro(d.basisTotal), C.ink]);
+      d.taxes.forEach(x => sumRows.push([d.taxes.length === 1 ? 'Umsatzsteuer:' : `Umsatzsteuer ${formatNumberDE(x.rate)} %:`, formatEuro(x.tax), C.ink]));
+      if (t + sumRows.length * 17.3 + 32 > LIM_T) newPage();
+      let sb0 = t + 12.8;
+      sumRows.forEach(([lab, val, col], i) => {
+        const base = sb0 + i * 17.3;
+        rt(val, R, base, 9.8, fontBold, col);
+        rt(lab + ' ', R - tw(val, 9.8, fontBold), base, 9.8, font, col);
       });
-      y -= 8;
+      const lastBase = sb0 + (sumRows.length - 1) * 17.3;
+      const gLab = 'Gesamtbetrag Brutto: ', gVal = formatEuro(d.grand);
+      const gW = tw(gLab, 11.5) + tw(gVal, 11.5, fontBold);
+      hl(R - gW, R, lastBase + 9.7, 1.5, C.ind2);
+      rt(gVal, R, lastBase + 26.7, 11.5, fontBold, C.navy);
+      rt(gLab, R - tw(gVal, 11.5, fontBold), lastBase + 26.7, 11.5, font, C.navy);
+      t = lastBase + 26.7 + 13;
 
-      // ================= SCHLUSSTEXT =================
+      // ---------- Schlusstext ----------
       const schluss = replaceBelegPlaceholders(b.schlusstext || '', {
         belegnummer: b.belegnummer, belegdatum: b.belegdatum,
         leistungsdatum_von: lVon, leistungsdatum_bis: lBis, kundeObj: k
       });
-      if (schluss.trim()) {
-        wrap(schluss, font, 9.5, R - L).forEach(line => { ensure(13); txt(line, L, y, 9.5); y -= 12.5; });
-        y -= 8;
-      }
+      const closeLine = (s, f = font) => { if (t + 14 > LIM_T) newPage(); txt(s, L, t + 11, 9.5, f); t += 13.8; };
+      if (schluss.trim()) wrap(schluss, font, 9.5, R - L).forEach(line => closeLine(line));
       if (firmenDaten.inhaber) {
-        ensure(30);
-        txt('Mit freundlichen Grüßen', L, y, 9.5, fontBold); y -= 12.5;
-        txt(firmenDaten.inhaber, L, y, 9.5, fontBold);
+        t += 7.5;
+        if (t + 30 > LIM_T) newPage();
+        closeLine('Mit freundlichen Grüßen', fontBold);
+        closeLine(firmenDaten.inhaber, fontBold);
       }
 
-      // ================= FUSSZEILE AUF JEDER SEITE =================
+      // ---------- Feste Fußzeile auf jeder Seite ----------
+      const fw = [141.5, 128.6, 141.5];
+      const fx = [L, L + fw[0] + 6, L + fw[0] + fw[1] + 12];
       pages.forEach((pg, idx) => {
         page = pg;
-        page.drawLine({ start: { x: L, y: 70 }, end: { x: R, y: 70 }, thickness: 1.5, color: purple });
-        txt(`${firmenDaten.firmenname || ''} | Inh.: ${firmenDaten.inhaber || '-'} | ${firmenDaten.strasse || ''}, ${firmenDaten.plz || ''} ${firmenDaten.ort || ''}`, L, 58, 7, font, grey);
-        txt(`Tel.: ${firmenDaten.telefon || '-'} | E-Mail: ${firmenDaten.email || '-'} | Web: ${firmenDaten.webseite || '-'}`, L, 48, 7, font, grey);
-        txt(`${firmenDaten.bankname ? firmenDaten.bankname + ' | ' : ''}IBAN: ${firmenDaten.iban || '-'}${firmenDaten.bic ? ' | BIC: ' + firmenDaten.bic : ''} | ${firmenDaten.ust_id ? 'USt-IdNr.: ' + firmenDaten.ust_id : 'St.-Nr.: ' + (firmenDaten.steuernummer || '-')}`, L, 38, 7, font, grey);
-        rt(`Seite ${idx + 1} / ${pages.length}`, R, 26, 8, fontBold, rgb(0.26, 0.22, 0.79));
+        hl(L, R, 764, 1.5, C.purple);
+        const cols = [
+          ['DK', [`Inhaber: ${firmenDaten.inhaber || '-'}`, `${firmenDaten.strasse || ''}, ${firmenDaten.plz || ''} ${firmenDaten.ort || ''}`]],
+          ['Kontakt', [`Tel.: ${firmenDaten.telefon || '-'}`, `E-Mail: ${firmenDaten.email || '-'}`, `Web: ${firmenDaten.webseite || '-'}`]],
+          ['Bank & Steuer', [`Bank: ${firmenDaten.bankname || '-'}`, `IBAN: ${firmenDaten.iban || '-'}`, firmenDaten.ust_id ? `USt-IdNr.: ${firmenDaten.ust_id}` : `St.-Nr.: ${firmenDaten.steuernummer || '-'}`]]
+        ];
+        cols[0][0] = firmaName;
+        cols.forEach(([head, lines], ci) => {
+          let fy = 778.5;
+          txt(head, fx[ci], fy, 7.6, fontBold, C.indigo); fy += 10.5;
+          lines.forEach(ln => wrap(ln, font, 7.6, fw[ci] - 6).forEach(w => { txt(w, fx[ci], fy, 7.6, font, C.row); fy += 10.5; }));
+        });
+        rt(`Seite ${idx + 1} / ${pages.length}`, R, 778.5, 7.6, fontBold, C.indigo);
       });
 
       // ================= ZUGFeRD / FACTUR-X: XML-ANHANG + XMP =================
