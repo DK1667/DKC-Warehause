@@ -4150,7 +4150,7 @@
         const tr = document.createElement('tr');
         if (hidden) tr.style.opacity = '0.55';
         tr.innerHTML = `
-          <td><span class="pill pill-${b.beleg_typ}">${typText}</span></td>
+          <td style="white-space:nowrap;">${isAngebot ? `<button type="button" class="btn btn-secondary btn-xs" onclick="toggleBelegDetails('${b.id}')" title="Auftrag auf-/zuklappen">${belegExpanded.has(b.id) ? '▾' : '▸'}</button> ` : ''}<span class="pill pill-${b.beleg_typ}">${typText}</span></td>
           <td><strong>${escHtml(b.belegnummer)}</strong></td>
           <td>${formatDateDE(b.belegdatum)}</td>
           <td>${escHtml(getKundenAnzeigeName(k))}</td>
@@ -4166,13 +4166,19 @@
             ${isAngebot ? `<button class="btn btn-warning btn-sm" onclick="convertAngebotToRechnung('${b.id}')">→ Rechnung</button>` : ''}
             ${isAngebot ? `<button class="btn btn-secondary btn-sm" onclick="toggleBelegAusgeblendet('${b.id}')">${hidden ? '👁️ Einblenden' : '🙈 Ausblenden'}</button>` : ''}
             ${isAngebot ? (confirmed
-              ? `<button class="btn btn-success btn-sm" onclick="openAuftragModal('${b.id}')">📋 Auftrag</button>`
+              ? `<button class="btn btn-success btn-sm" onclick="toggleBelegDetails('${b.id}')">📋 Auftrag ${belegExpanded.has(b.id) ? '▾' : '▸'}</button>`
               : `<button class="btn btn-success btn-sm" onclick="bestaetigeAngebot('${b.id}')">✔ Bestätigen</button>`) : ''}
+            ${isAngebot ? `<button class="btn btn-secondary btn-sm" onclick="openPackliste('${b.id}')">📦 Packliste</button>` : ''}
             ${isRechnung && b.status === 'offen' ? `<button class="btn btn-secondary btn-sm" onclick="markBelegBezahlt('${b.id}')">✓ Bezahlt</button>` : ''}
             ${isRechnung && !locked ? `<button class="btn btn-secondary btn-sm" onclick="festschreibenBeleg('${b.id}')">🔒 Festschreiben</button>` : ''}
           </td>
         `;
         tbody.appendChild(tr);
+        if (isAngebot && belegExpanded.has(b.id)) {
+          const dr = document.createElement('tr');
+          dr.innerHTML = `<td colspan="8" style="background:var(--surface-2); padding:12px 16px;">${auftragPanelHtml(b)}</td>`;
+          tbody.appendChild(dr);
+        }
       });
   }
 
@@ -5228,6 +5234,7 @@ ${prop('ConformanceLevel', 'The conformance level of the embedded Factur-X data'
     const snap = { ...(b.kunde_snapshot || {}), _bestaetigt_am: (b.kunde_snapshot && b.kunde_snapshot._bestaetigt_am) || new Date().toISOString().slice(0, 10) };
     const { error: e2 } = await sb.from('belege').update({ status: 'angenommen', kunde_snapshot: snap }).eq('id', id);
     if (e2) return alert('Fehler: ' + e2.message);
+    belegExpanded.add(id);
     await reloadAllData();
     showToast(wasConfirmed ? '📆 Kalender aktualisiert' : '✅ Angebot bestätigt & im Kalender eingetragen');
     gcalAutoSync();
@@ -5840,6 +5847,45 @@ ${prop('ConformanceLevel', 'The conformance level of the embedded Factur-X data'
   function setAllSettingsSections(open) {
     document.querySelectorAll('.settings-section').forEach(el => el.classList.toggle('open', open));
     saveSettingsOpenState();
+  }
+
+  // ---------- Auftrag direkt in der Angebotsliste aufklappen ----------
+  const belegExpanded = new Set();
+
+  function toggleBelegDetails(id) {
+    if (belegExpanded.has(id)) belegExpanded.delete(id); else belegExpanded.add(id);
+    renderBelege();
+  }
+
+  function auftragPanelHtml(b) {
+    const confirmed = isAngebotBestaetigt(b);
+    const { von, bis } = angebotZeitraum(b);
+    const marker = auftragMarker(b);
+    const eintraege = vermietungenListe.filter(m => m.notizen && m.notizen.startsWith(marker));
+    const pl = b.kunde_snapshot && b.kunde_snapshot._packliste;
+    const plAnz = pl && pl.items ? pl.items.filter(i => i.mitnehmen).length : 0;
+    const mat = eintraege.map(m => {
+      const a = artikelListe.find(x => x.id === m.artikel_id);
+      return `${m.menge}× ${escHtml(a ? a.bezeichnung : '?')} <span class="pill pill-${m.status}">${escHtml(String(m.status).toUpperCase())}</span>`;
+    }).join(' &nbsp; ');
+    const buttons = confirmed
+      ? `<button type="button" class="btn btn-sm" onclick="printAuftragsbestaetigung('${b.id}', false)">🖨️ Auftragsbestätigung drucken / PDF</button>
+         <button type="button" class="btn btn-secondary btn-sm" onclick="openAuftragModal('${b.id}')">✏️ Texte der Bestätigung</button>
+         <button type="button" class="btn btn-success btn-sm" onclick="openPackliste('${b.id}')">📦 Packliste</button>
+         <button type="button" class="btn btn-secondary btn-sm" onclick="bestaetigeAngebot('${b.id}')">📆 Kalender aktualisieren</button>
+         <button type="button" class="btn btn-danger btn-sm" onclick="bestaetigungZuruecknehmen('${b.id}')">↩ Bestätigung zurücknehmen</button>`
+      : `<button type="button" class="btn btn-success btn-sm" onclick="bestaetigeAngebot('${b.id}')">✔ Angebot bestätigen</button>
+         <button type="button" class="btn btn-secondary btn-sm" onclick="openPackliste('${b.id}')">📦 Packliste vorbereiten</button>`;
+    return `
+      <div style="display:flex; flex-direction:column; gap:6px; font-size:0.88rem;">
+        <div><strong>📋 Auftrag ${escHtml(b.belegnummer)}</strong> – ${confirmed
+          ? `<span style="color:#6ee7b7;">✅ bestätigt am ${formatDateDE(b.kunde_snapshot._bestaetigt_am)}</span>`
+          : '<span style="color:#fcd34d;">⏳ noch nicht bestätigt</span>'}</div>
+        <div style="color:var(--muted);">Zeitraum: ${escHtml(formatLeistungszeitraumText(von, bis) || '–')}</div>
+        <div style="color:var(--muted);">Material im Kalender: ${mat || '–'}</div>
+        <div style="color:var(--muted);">Packliste: ${plAnz ? plAnz + ' Positionen gespeichert' : 'noch nicht angelegt'}</div>
+        <div style="display:flex; gap:6px; flex-wrap:wrap; margin-top:4px;">${buttons}</div>
+      </div>`;
   }
 
   // =========================================================================
