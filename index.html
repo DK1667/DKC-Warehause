@@ -452,6 +452,13 @@
     .pack-items tr:hover td { background: transparent; }
     .pack-grp td { background: #f1f0fd; font-weight: 700; color: #312e81; font-size: 9pt; padding: 4px 6px; border-bottom: 1px solid #e9d5ff; }
     .pack-box { display: inline-block; width: 4.5mm; height: 4.5mm; border: 1.3px solid #000; vertical-align: middle; }
+    /* Einstellungen: auf-/zuklappbare Bereiche */
+    .settings-head { display: flex; justify-content: space-between; align-items: center; gap: 12px; cursor: pointer; user-select: none; }
+    .settings-head h2 { margin: 0; }
+    .settings-chevron { color: var(--muted); font-size: 1.2rem; transition: transform 0.15s; transform: rotate(-90deg); }
+    .settings-body { display: none; margin-top: 16px; border-top: 1px solid var(--border); padding-top: 16px; }
+    .settings-section.open .settings-body { display: block; }
+    .settings-section.open .settings-chevron { transform: rotate(0deg); }
     /* PWA Install Modal */
     .pwa-modal-backdrop {
       display: none;
@@ -617,12 +624,11 @@
     <button class="active" onclick="showTab('tab-belege', this)">📄 Angebote, Rechnungen &amp; Briefe</button>
     <button onclick="showTab('tab-kunden', this)">👥 Kunden &amp; KingBill-Import</button>
     <button onclick="showTab('tab-artikel', this)">📦 Artikel &amp; 3 Preislisten</button>
-    <button onclick="showTab('tab-miete', this)">📅 Vermietung &amp; Staffel</button>
     <button onclick="showTab('tab-kalender', this)">📆 Vermietkalender</button>
     <button onclick="showTab('tab-textbausteine', this)">✍️ Textbausteine</button>
     <button onclick="showTab('tab-statistik', this)">📊 Umsatz-Statistik</button>
     <button onclick="showTab('tab-backup', this)">💾 USB-Backup</button>
-    <button onclick="showTab('tab-firma', this)">⚙️ Firmendaten &amp; Logo</button>
+    <button onclick="showTab('tab-firma', this)">⚙️ Einstellungen</button>
   </nav>
 
   <main>
@@ -1207,64 +1213,42 @@
       </div>
     </section>
 
+        <!-- =================================================================== -->
+    <!-- TAB: VERMIETKALENDER                                                -->
     <!-- =================================================================== -->
-    <!-- TAB 4: VERMIETUNG & EINSTELLBARE MIETFAKTOR-STAFFEL                 -->
-    <!-- =================================================================== -->
-    <section id="tab-miete" class="section">
-      <!-- Einstellbare Mietfaktor-Staffel -->
+    <section id="tab-kalender" class="section">
       <div class="card">
         <div class="card-header">
-          <div>
-            <h2>⚙️ Einstellbare Mietfaktor-Staffel (für Angebote &amp; Vermietung)</h2>
-            <p style="margin:4px 0 0 0; font-size:0.84rem; color:var(--muted);">
-              Lege fest, mit welchem Faktor der Tagespreis bei mehrtägigen Einsätzen multipliziert wird (z. B. 1 Tag = 1,0 | 2 Tage = 1,5 | 3 Tage = 2,0). Über den letzten Eintrag hinaus wird der Faktor automatisch mit demselben Zuwachs wie zwischen den letzten beiden Einträgen fortgeführt.
-            </p>
+          <h2>📆 Vermietkalender</h2>
+          <div style="display:flex; gap:8px; flex-wrap:wrap; align-items:center;">
+            <button class="btn btn-secondary btn-sm" onclick="calShift(-1)">◀</button>
+            <strong id="kal-titel" style="min-width:150px; text-align:center;"></strong>
+            <button class="btn btn-secondary btn-sm" onclick="calShift(1)">▶</button>
+            <button class="btn btn-secondary btn-sm" onclick="calToday()">Heute</button>
+            <button class="btn btn-secondary btn-sm" onclick="exportKalenderIcs()">📅 Als .ics exportieren</button>
           </div>
-          <button type="button" class="btn btn-secondary btn-sm" onclick="createDefaultMietfaktoren()">✨ Beispiel-Staffel (1–5 Tage) anlegen</button>
         </div>
-
-        <form id="mietfaktor-form" style="background:var(--surface-2); padding:12px; border-radius:8px; border:1px solid var(--border); margin-bottom:14px;">
-          <input type="hidden" id="mf-id" />
-          <div class="grid-4" style="align-items:end;">
-            <div class="form-group" style="margin-bottom:0;">
-              <label>Anzahl Miettage *</label>
-              <input type="number" min="1" step="1" id="mf-tage" required placeholder="z. B. 2" />
-            </div>
-            <div class="form-group" style="margin-bottom:0;">
-              <label>Multiplikator / Faktor *</label>
-              <input type="number" min="0.01" step="0.01" id="mf-faktor" required placeholder="z. B. 1.5" />
-            </div>
-            <div class="form-group" style="margin-bottom:0;">
-              <label>Bezeichnung (optional)</label>
-              <input type="text" id="mf-bezeichnung" placeholder="z. B. Wochenend-Staffel (2 Tage)" />
-            </div>
-            <div style="display:flex; gap:6px;">
-              <button type="submit" class="btn">Faktor speichern</button>
-              <button type="button" class="btn btn-secondary" onclick="resetMietfaktorForm()">Neu</button>
-            </div>
+        <p style="margin:0 0 12px 0; font-size:0.84rem; color:var(--muted);">
+          Zeigt alle Reservierungen und Vermietungen. Bestätigte Angebote tragen ihre Mietartikel hier automatisch ein. Rot umrandete Tage sind überbucht.
+        </p>
+        <div class="grid-2" style="margin-bottom:12px;">
+          <div class="form-group" style="margin-bottom:0;">
+            <label>Artikel filtern</label>
+            <select id="kal-filter-artikel" onchange="renderKalender()"><option value="">Alle Artikel</option></select>
           </div>
-        </form>
-
-        <div class="table-wrap">
-          <table>
-            <thead>
-              <tr>
-                <th>Mietdauer</th>
-                <th>Mietfaktor</th>
-                <th>Rechenbeispiel (bei 100 € Tagespreis)</th>
-                <th>Bezeichnung</th>
-                <th>Aktionen</th>
-              </tr>
-            </thead>
-            <tbody id="mietfaktoren-tbody"></tbody>
-          </table>
+          <div class="form-group" style="margin-bottom:0; justify-content:flex-end;">
+            <label style="display:inline-flex; align-items:center; gap:8px; cursor:pointer;">
+              <input type="checkbox" id="kal-zeige-zurueck" onchange="renderKalender()" /> Zurückgegebene anzeigen
+            </label>
+          </div>
         </div>
+        <div id="kal-grid" class="cal-grid"></div>
+        <div id="kal-detail" style="margin-top:16px;"></div>
       </div>
 
-      <!-- Vermietungs-Kalender -->
-      <div class="card">
+<div class="card">
         <div class="card-header">
-          <h2>Vermietungs-Kalender (Simulatoren &amp; Equipment)</h2>
+          <h2>Vermietungen &amp; Reservierungen (Simulatoren &amp; Equipment)</h2>
           <button class="btn" onclick="resetMieteForm(); toggleBox('miete-editor-box', true)">+ Neue Vermietung eintragen</button>
         </div>
 
@@ -1345,69 +1329,6 @@
             <tbody id="miete-tbody"></tbody>
           </table>
         </div>
-      </div>
-    </section>
-
-    <!-- =================================================================== -->
-    <!-- TAB: VERMIETKALENDER                                                -->
-    <!-- =================================================================== -->
-    <section id="tab-kalender" class="section">
-      <div class="card">
-        <div class="card-header">
-          <h2>📆 Vermietkalender</h2>
-          <div style="display:flex; gap:8px; flex-wrap:wrap; align-items:center;">
-            <button class="btn btn-secondary btn-sm" onclick="calShift(-1)">◀</button>
-            <strong id="kal-titel" style="min-width:150px; text-align:center;"></strong>
-            <button class="btn btn-secondary btn-sm" onclick="calShift(1)">▶</button>
-            <button class="btn btn-secondary btn-sm" onclick="calToday()">Heute</button>
-            <button class="btn btn-secondary btn-sm" onclick="exportKalenderIcs()">📅 Als .ics exportieren</button>
-          </div>
-        </div>
-        <p style="margin:0 0 12px 0; font-size:0.84rem; color:var(--muted);">
-          Zeigt alle Reservierungen und Vermietungen. Bestätigte Angebote tragen ihre Mietartikel hier automatisch ein. Rot umrandete Tage sind überbucht.
-        </p>
-        <div class="grid-2" style="margin-bottom:12px;">
-          <div class="form-group" style="margin-bottom:0;">
-            <label>Artikel filtern</label>
-            <select id="kal-filter-artikel" onchange="renderKalender()"><option value="">Alle Artikel</option></select>
-          </div>
-          <div class="form-group" style="margin-bottom:0; justify-content:flex-end;">
-            <label style="display:inline-flex; align-items:center; gap:8px; cursor:pointer;">
-              <input type="checkbox" id="kal-zeige-zurueck" onchange="renderKalender()" /> Zurückgegebene anzeigen
-            </label>
-          </div>
-        </div>
-        <div id="kal-grid" class="cal-grid"></div>
-        <div id="kal-detail" style="margin-top:16px;"></div>
-      </div>
-
-      <div class="card" id="gcal-card">
-        <div class="card-header">
-          <h2>🔗 Google Kalender</h2>
-        </div>
-        <p style="margin:0 0 12px 0; font-size:0.84rem; color:var(--muted);">
-          Überträgt Reservierungen und Vermietungen als Ganztags-Termine in deinen Google Kalender (ein Termin pro Auftrag, Material in der Beschreibung).
-          Die App ändert und löscht nur Termine, die sie selbst angelegt hat – deine anderen Termine bleiben unberührt.
-        </p>
-        <div class="grid-2">
-          <div class="form-group">
-            <label>Google OAuth Client-ID</label>
-            <input type="text" id="gcal-client-id" placeholder="1234567890-abc.apps.googleusercontent.com" onchange="gcalUiSave()" />
-          </div>
-          <div class="form-group">
-            <label>Ziel-Kalender</label>
-            <select id="gcal-calendar" onchange="gcalUiSave()"><option value="">-- erst mit Google verbinden --</option></select>
-          </div>
-        </div>
-        <label style="display:inline-flex; align-items:center; gap:8px; cursor:pointer; margin-bottom:12px; font-size:0.86rem;">
-          <input type="checkbox" id="gcal-auto" onchange="gcalUiSave()" /> Nach Änderungen automatisch abgleichen (solange die Verbindung in dieser Sitzung aktiv ist)
-        </label>
-        <div style="display:flex; gap:8px; flex-wrap:wrap;">
-          <button type="button" class="btn btn-secondary" onclick="gcalConnectClick()">🔑 Mit Google verbinden</button>
-          <button type="button" class="btn btn-success" onclick="gcalSyncClick()">🔄 Jetzt abgleichen</button>
-          <button type="button" class="btn btn-danger btn-sm" onclick="gcalRemoveAll()">🗑️ Alle App-Termine aus dem Kalender entfernen</button>
-        </div>
-        <div id="gcal-status" style="margin-top:12px; font-size:0.86rem; color:var(--muted);"></div>
       </div>
     </section>
 
@@ -1546,8 +1467,19 @@
     <!-- TAB 8: FIRMENDATEN & LOGO UPLOAD                                    -->
     <!-- =================================================================== -->
     <section id="tab-firma" class="section">
-      <div class="card">
-        <h2>⚙️ Firmendaten, Briefkopf-Logo &amp; Steuernummern</h2>
+      <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px; margin-bottom:14px;">
+        <h2>⚙️ Einstellungen</h2>
+        <div style="display:flex; gap:8px;">
+          <button type="button" class="btn btn-secondary btn-sm" onclick="setAllSettingsSections(true)">Alle aufklappen</button>
+          <button type="button" class="btn btn-secondary btn-sm" onclick="setAllSettingsSections(false)">Alle zuklappen</button>
+        </div>
+      </div>
+      <div class="card settings-section" id="set-firma">
+        <div class="settings-head" onclick="toggleSettingsSection('set-firma')">
+          <h2>🏢 Firmendaten, Briefkopf-Logo &amp; Steuernummern</h2>
+          <span class="settings-chevron">▾</span>
+        </div>
+        <div class="settings-body">
         <form id="firma-form">
           <div style="background:var(--surface-2); border:1px solid var(--border); border-radius:8px; padding:14px; margin-bottom:16px; display:flex; flex-wrap:wrap; gap:16px; align-items:center;">
             <img id="firma-logo-preview" src="logo.png" alt="Logo Vorschau" style="height:64px; width:auto; background:transparent; padding:4px; border-radius:6px;" onerror="this.style.display='none'" />
@@ -1642,6 +1574,95 @@
           </div>
           <button type="submit" class="btn">Firmendaten speichern</button>
         </form>
+        </div>
+      </div>
+
+      <div class="card settings-section" id="set-staffel">
+        <div class="settings-head" onclick="toggleSettingsSection('set-staffel')">
+          <h2>📅 Mietfaktor-Staffel (Angebote &amp; Vermietung)</h2>
+          <span class="settings-chevron">▾</span>
+        </div>
+        <div class="settings-body">
+        <div class="card-header">
+          <div>
+            <p style="margin:4px 0 0 0; font-size:0.84rem; color:var(--muted);">
+              Lege fest, mit welchem Faktor der Tagespreis bei mehrtägigen Einsätzen multipliziert wird (z. B. 1 Tag = 1,0 | 2 Tage = 1,5 | 3 Tage = 2,0). Über den letzten Eintrag hinaus wird der Faktor automatisch mit demselben Zuwachs wie zwischen den letzten beiden Einträgen fortgeführt.
+            </p>
+          </div>
+          <button type="button" class="btn btn-secondary btn-sm" onclick="createDefaultMietfaktoren()">✨ Beispiel-Staffel (1–5 Tage) anlegen</button>
+        </div>
+
+        <form id="mietfaktor-form" style="background:var(--surface-2); padding:12px; border-radius:8px; border:1px solid var(--border); margin-bottom:14px;">
+          <input type="hidden" id="mf-id" />
+          <div class="grid-4" style="align-items:end;">
+            <div class="form-group" style="margin-bottom:0;">
+              <label>Anzahl Miettage *</label>
+              <input type="number" min="1" step="1" id="mf-tage" required placeholder="z. B. 2" />
+            </div>
+            <div class="form-group" style="margin-bottom:0;">
+              <label>Multiplikator / Faktor *</label>
+              <input type="number" min="0.01" step="0.01" id="mf-faktor" required placeholder="z. B. 1.5" />
+            </div>
+            <div class="form-group" style="margin-bottom:0;">
+              <label>Bezeichnung (optional)</label>
+              <input type="text" id="mf-bezeichnung" placeholder="z. B. Wochenend-Staffel (2 Tage)" />
+            </div>
+            <div style="display:flex; gap:6px;">
+              <button type="submit" class="btn">Faktor speichern</button>
+              <button type="button" class="btn btn-secondary" onclick="resetMietfaktorForm()">Neu</button>
+            </div>
+          </div>
+        </form>
+
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Mietdauer</th>
+                <th>Mietfaktor</th>
+                <th>Rechenbeispiel (bei 100 € Tagespreis)</th>
+                <th>Bezeichnung</th>
+                <th>Aktionen</th>
+              </tr>
+            </thead>
+            <tbody id="mietfaktoren-tbody"></tbody>
+          </table>
+        </div>
+      
+        </div>
+      </div>
+
+      <div class="card settings-section" id="set-gcal">
+        <div class="settings-head" onclick="toggleSettingsSection('set-gcal')">
+          <h2>🔗 Google Kalender</h2>
+          <span class="settings-chevron">▾</span>
+        </div>
+        <div class="settings-body">
+        <p style="margin:0 0 12px 0; font-size:0.84rem; color:var(--muted);">
+          Überträgt Reservierungen und Vermietungen als Ganztags-Termine in deinen Google Kalender (ein Termin pro Auftrag, Material in der Beschreibung).
+          Die App ändert und löscht nur Termine, die sie selbst angelegt hat – deine anderen Termine bleiben unberührt.
+        </p>
+        <div class="grid-2">
+          <div class="form-group">
+            <label>Google OAuth Client-ID</label>
+            <input type="text" id="gcal-client-id" placeholder="1234567890-abc.apps.googleusercontent.com" onchange="gcalUiSave()" />
+          </div>
+          <div class="form-group">
+            <label>Ziel-Kalender</label>
+            <select id="gcal-calendar" onchange="gcalUiSave()"><option value="">-- erst mit Google verbinden --</option></select>
+          </div>
+        </div>
+        <label style="display:inline-flex; align-items:center; gap:8px; cursor:pointer; margin-bottom:12px; font-size:0.86rem;">
+          <input type="checkbox" id="gcal-auto" onchange="gcalUiSave()" /> Nach Änderungen automatisch abgleichen (solange die Verbindung in dieser Sitzung aktiv ist)
+        </label>
+        <div style="display:flex; gap:8px; flex-wrap:wrap;">
+          <button type="button" class="btn btn-secondary" onclick="gcalConnectClick()">🔑 Mit Google verbinden</button>
+          <button type="button" class="btn btn-success" onclick="gcalSyncClick()">🔄 Jetzt abgleichen</button>
+          <button type="button" class="btn btn-danger btn-sm" onclick="gcalRemoveAll()">🗑️ Alle App-Termine aus dem Kalender entfernen</button>
+        </div>
+        <div id="gcal-status" style="margin-top:12px; font-size:0.86rem; color:var(--muted);"></div>
+      
+        </div>
       </div>
     </section>
   </main>
@@ -2050,7 +2071,8 @@
     document.getElementById(tabId).classList.add('active');
     btn.classList.add('active');
     if (tabId === 'tab-statistik') renderStatistik();
-    if (tabId === 'tab-kalender') { renderKalender(); gcalInitUi(); }
+    if (tabId === 'tab-kalender') renderKalender();
+    if (tabId === 'tab-firma') { initSettingsSections(); gcalInitUi(); }
   }
 
   // =========================================================================
@@ -5559,7 +5581,11 @@ ${prop('ConformanceLevel', 'The conformance level of the embedded Factur-X data'
     const btn = [...document.querySelectorAll('nav button')].find(b => (b.getAttribute('onclick') || '').includes(`'${tabId}'`));
     if (btn) showTab(tabId, btn);
   }
-  function kalEditMiete(id) { gotoTab('tab-miete'); editMiete(id); }
+  function kalEditMiete(id) {
+    editMiete(id);
+    const box = document.getElementById('miete-editor-box');
+    if (box) box.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }
 
   function exportKalenderIcs() {
     const rows = vermietungenListe.filter(m => m.status === 'reserviert' || m.status === 'vermietet');
@@ -5792,6 +5818,28 @@ ${prop('ConformanceLevel', 'The conformance level of the embedded Factur-X data'
       for (const [, ex] of existing) { await gcalApi('DELETE', `/calendars/${cal}/events/${encodeURIComponent(ex.id)}`); n++; }
       gcalStatus(`🗑️ ${n} Termine entfernt.`, 'ok');
     } catch (e) { gcalStatus('❌ ' + e.message, 'err'); }
+  }
+
+  // ---------- Einstellungen: Bereiche auf-/zuklappen (Zustand wird pro Gerät gemerkt) ----------
+  function settingsOpenState() { try { return JSON.parse(localStorage.getItem('dk_settings_open') || '{}'); } catch (e) { return {}; } }
+  function saveSettingsOpenState() {
+    const st = {};
+    document.querySelectorAll('.settings-section').forEach(el => { st[el.id] = el.classList.contains('open'); });
+    try { localStorage.setItem('dk_settings_open', JSON.stringify(st)); } catch (e) { /* ignorieren */ }
+  }
+  function initSettingsSections() {
+    const st = settingsOpenState();
+    document.querySelectorAll('.settings-section').forEach(el => el.classList.toggle('open', Boolean(st[el.id])));
+  }
+  function toggleSettingsSection(id) {
+    const el = document.getElementById(id);
+    if (!el) return;
+    el.classList.toggle('open');
+    saveSettingsOpenState();
+  }
+  function setAllSettingsSections(open) {
+    document.querySelectorAll('.settings-section').forEach(el => el.classList.toggle('open', open));
+    saveSettingsOpenState();
   }
 
   // =========================================================================
