@@ -13,6 +13,7 @@
   <script src="https://cdn.jsdelivr.net/npm/pdf-lib@1.17.1/dist/pdf-lib.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/@pdf-lib/fontkit@1.1.1/dist/fontkit.umd.min.js"></script>
+  <script src="https://accounts.google.com/gsi/client" async defer></script>
   <style>
     :root {
       --bg: #0f172a;
@@ -1379,6 +1380,35 @@
         <div id="kal-grid" class="cal-grid"></div>
         <div id="kal-detail" style="margin-top:16px;"></div>
       </div>
+
+      <div class="card" id="gcal-card">
+        <div class="card-header">
+          <h2>🔗 Google Kalender</h2>
+        </div>
+        <p style="margin:0 0 12px 0; font-size:0.84rem; color:var(--muted);">
+          Überträgt Reservierungen und Vermietungen als Ganztags-Termine in deinen Google Kalender (ein Termin pro Auftrag, Material in der Beschreibung).
+          Die App ändert und löscht nur Termine, die sie selbst angelegt hat – deine anderen Termine bleiben unberührt.
+        </p>
+        <div class="grid-2">
+          <div class="form-group">
+            <label>Google OAuth Client-ID</label>
+            <input type="text" id="gcal-client-id" placeholder="1234567890-abc.apps.googleusercontent.com" onchange="gcalUiSave()" />
+          </div>
+          <div class="form-group">
+            <label>Ziel-Kalender</label>
+            <select id="gcal-calendar" onchange="gcalUiSave()"><option value="">-- erst mit Google verbinden --</option></select>
+          </div>
+        </div>
+        <label style="display:inline-flex; align-items:center; gap:8px; cursor:pointer; margin-bottom:12px; font-size:0.86rem;">
+          <input type="checkbox" id="gcal-auto" onchange="gcalUiSave()" /> Nach Änderungen automatisch abgleichen (solange die Verbindung in dieser Sitzung aktiv ist)
+        </label>
+        <div style="display:flex; gap:8px; flex-wrap:wrap;">
+          <button type="button" class="btn btn-secondary" onclick="gcalConnectClick()">🔑 Mit Google verbinden</button>
+          <button type="button" class="btn btn-success" onclick="gcalSyncClick()">🔄 Jetzt abgleichen</button>
+          <button type="button" class="btn btn-danger btn-sm" onclick="gcalRemoveAll()">🗑️ Alle App-Termine aus dem Kalender entfernen</button>
+        </div>
+        <div id="gcal-status" style="margin-top:12px; font-size:0.86rem; color:var(--muted);"></div>
+      </div>
     </section>
 
     <!-- =================================================================== -->
@@ -2020,7 +2050,7 @@
     document.getElementById(tabId).classList.add('active');
     btn.classList.add('active');
     if (tabId === 'tab-statistik') renderStatistik();
-    if (tabId === 'tab-kalender') renderKalender();
+    if (tabId === 'tab-kalender') { renderKalender(); gcalInitUi(); }
   }
 
   // =========================================================================
@@ -4371,7 +4401,8 @@
     if (res.error) return alert('Fehler: ' + res.error.message);
     showToast('✅ Vermietung gespeichert!');
     toggleBox('miete-editor-box', false);
-    loadVermietungen();
+    await loadVermietungen();
+    gcalAutoSync();
   });
 
   function calcMietTage(von, bis) {
@@ -5177,6 +5208,7 @@ ${prop('ConformanceLevel', 'The conformance level of the embedded Factur-X data'
     if (e2) return alert('Fehler: ' + e2.message);
     await reloadAllData();
     showToast(wasConfirmed ? '📆 Kalender aktualisiert' : '✅ Angebot bestätigt & im Kalender eingetragen');
+    gcalAutoSync();
     if (!wasConfirmed && confirm('Auftragsbestätigung jetzt drucken / als PDF speichern?')) printAuftragsbestaetigung(id, false);
   }
 
@@ -5197,6 +5229,7 @@ ${prop('ConformanceLevel', 'The conformance level of the embedded Factur-X data'
     closeAuftragModal();
     showToast('↩ Bestätigung zurückgenommen');
     await reloadAllData();
+    gcalAutoSync();
   }
 
   // ---------- Auftrags-Fenster ----------
@@ -5550,6 +5583,215 @@ ${prop('ConformanceLevel', 'The conformance level of the embedded Factur-X data'
     document.body.appendChild(a); a.click(); a.remove();
     setTimeout(() => URL.revokeObjectURL(url), 2000);
     showToast(`📅 ${rows.length} Einträge exportiert`);
+  }
+
+  // =========================================================================
+  // GOOGLE KALENDER (direkt aus dem Browser, Anmeldung über Google Identity Services)
+  // Termine tragen die Kennzeichnung dkApp=dkcustom – nur solche werden geändert/gelöscht.
+  // =========================================================================
+  const GCAL_SCOPES = 'https://www.googleapis.com/auth/calendar.events https://www.googleapis.com/auth/calendar.calendarlist.readonly';
+  let gcalToken = '', gcalTokenExp = 0, gcalSyncing = false;
+
+  function gcalSettings() { try { return JSON.parse(localStorage.getItem('dk_gcal') || '{}'); } catch (e) { return {}; } }
+  function gcalSave(patch) { try { localStorage.setItem('dk_gcal', JSON.stringify({ ...gcalSettings(), ...patch })); } catch (e) { /* ignorieren */ } }
+  function gcalHasToken() { return Boolean(gcalToken) && Date.now() < gcalTokenExp - 60000; }
+  function gcalStatus(msg, kind = '') {
+    const el = document.getElementById('gcal-status');
+    if (!el) return;
+    el.textContent = msg;
+    el.style.color = kind === 'ok' ? '#6ee7b7' : kind === 'err' ? '#fca5a5' : 'var(--muted)';
+  }
+
+  function gcalInitUi() {
+    const s = gcalSettings();
+    const idEl = document.getElementById('gcal-client-id');
+    const autoEl = document.getElementById('gcal-auto');
+    const sel = document.getElementById('gcal-calendar');
+    if (idEl && !idEl.value) idEl.value = s.clientId || '';
+    if (autoEl) autoEl.checked = Boolean(s.auto);
+    if (sel && s.calendarId && !sel.dataset.loaded) {
+      sel.innerHTML = `<option value="${escHtml(s.calendarId)}">${escHtml(s.calendarName || s.calendarId)}</option>`;
+    }
+    gcalStatus(gcalHasToken() ? '✅ Mit Google verbunden.' : (s.clientId ? 'Nicht verbunden – bitte „Mit Google verbinden“ klicken.' : 'Bitte zuerst die Google Client-ID eintragen.'));
+  }
+
+  function gcalUiSave() {
+    const sel = document.getElementById('gcal-calendar');
+    gcalSave({
+      clientId: (document.getElementById('gcal-client-id').value || '').trim(),
+      auto: document.getElementById('gcal-auto').checked,
+      calendarId: sel && sel.value ? sel.value : (gcalSettings().calendarId || ''),
+      calendarName: sel && sel.value ? sel.options[sel.selectedIndex].textContent : (gcalSettings().calendarName || '')
+    });
+  }
+
+  function gcalConnect() {
+    return new Promise((resolve, reject) => {
+      const s = gcalSettings();
+      if (!s.clientId) return reject(new Error('Bitte zuerst die Google Client-ID eintragen.'));
+      if (!(window.google && google.accounts && google.accounts.oauth2)) return reject(new Error('Google-Anmeldung ist noch nicht geladen. Bitte kurz warten und erneut versuchen (Internetverbindung prüfen).'));
+      const client = google.accounts.oauth2.initTokenClient({
+        client_id: s.clientId,
+        scope: GCAL_SCOPES,
+        callback: (resp) => {
+          if (resp.error) return reject(new Error(resp.error_description || resp.error));
+          gcalToken = resp.access_token;
+          gcalTokenExp = Date.now() + (Number(resp.expires_in) || 3600) * 1000;
+          gcalSave({ connected: true });
+          resolve(gcalToken);
+        },
+        error_callback: (e) => reject(new Error(e && e.type === 'popup_closed' ? 'Anmeldefenster wurde geschlossen.' : (e && e.type) || 'Anmeldung fehlgeschlagen.'))
+      });
+      client.requestAccessToken({ prompt: s.connected ? '' : 'consent' });
+    });
+  }
+
+  async function gcalApi(method, path, body) {
+    const res = await fetch('https://www.googleapis.com/calendar/v3' + path, {
+      method,
+      headers: { Authorization: 'Bearer ' + gcalToken, 'Content-Type': 'application/json' },
+      body: body ? JSON.stringify(body) : undefined
+    });
+    if (res.status === 204) return null;
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      if (res.status === 401) gcalToken = '';
+      throw new Error((data.error && data.error.message) || ('Google-Fehler ' + res.status));
+    }
+    return data;
+  }
+
+  async function gcalLoadCalendars() {
+    const d = await gcalApi('GET', '/users/me/calendarList?minAccessRole=writer&maxResults=100');
+    const items = (d && d.items) || [];
+    const s = gcalSettings();
+    const sel = document.getElementById('gcal-calendar');
+    if (!sel) return;
+    sel.dataset.loaded = '1';
+    sel.innerHTML = items.map(c => `<option value="${escHtml(c.id)}">${escHtml(c.summary || c.id)}${c.primary ? ' (Hauptkalender)' : ''}</option>`).join('');
+    const wanted = items.some(c => c.id === s.calendarId) ? s.calendarId : (items.find(c => c.primary) || items[0] || {}).id;
+    if (wanted) sel.value = wanted;
+    gcalUiSave();
+  }
+
+  async function gcalConnectClick() {
+    try {
+      gcalUiSave();
+      gcalStatus('Verbinde mit Google …');
+      await gcalConnect();
+      await gcalLoadCalendars();
+      gcalStatus('✅ Verbunden. Kalender wählen und „Jetzt abgleichen“ klicken.', 'ok');
+    } catch (e) { gcalStatus('❌ ' + e.message, 'err'); }
+  }
+
+  // Gewünschte Termine: ein Termin pro Auftrag (bzw. pro manueller Vermietung)
+  function gcalDesiredEvents() {
+    const grenze = addDaysToIsoDate(new Date().toISOString().slice(0, 10), -60);
+    const rows = vermietungenListe.filter(m => m.status !== 'zurueck' && m.enddatum >= grenze);
+    const groups = new Map();
+    rows.forEach(m => {
+      const mk = /^\[([^\]]+)\]/.exec(m.notizen || '');
+      const key = mk ? `ag:${mk[1]}|${m.startdatum}|${m.enddatum}` : `m:${m.id}`;
+      if (!groups.has(key)) groups.set(key, { key, rows: [], marker: mk ? mk[1] : '' });
+      groups.get(key).rows.push(m);
+    });
+    const out = new Map();
+    groups.forEach(g => {
+      const first = g.rows[0];
+      const k = kundenListe.find(x => x.id === first.kunde_id);
+      const items = g.rows.map(m => {
+        const a = artikelListe.find(x => x.id === m.artikel_id);
+        return `${m.menge}× ${a ? a.bezeichnung : 'Material'}`;
+      });
+      const offer = g.marker ? belegeListe.find(b => b.beleg_typ === 'angebot' && b.belegnummer === g.marker) : null;
+      const status = g.rows.some(m => m.status === 'vermietet') ? 'vermietet' : (g.rows.every(m => m.status === 'abgerechnet') ? 'abgerechnet' : 'reserviert');
+      const titel = offer ? (offer.einleitungstext || '') : '';
+      const summary = (g.marker ? `📦 ${kundeKurz(k)}${titel ? ' – ' + titel : ''}` : `📦 ${items.join(', ')} – ${kundeKurz(k)}`).slice(0, 200);
+      const notiz = g.marker ? '' : (first.notizen || '');
+      const description = [`Status: ${status}`, 'Material:', ...items.map(t => '• ' + t), g.marker ? `Angebot/Auftrag: ${g.marker}` : '', notiz,
+        '', 'Automatisch aus DK CUSTOM Warenwirtschaft'].filter((x, i, arr) => x !== '' || (i > 0 && arr[i - 1] !== '')).join('\n');
+      out.set(g.key, {
+        summary, description,
+        start: { date: first.startdatum },
+        end: { date: addDaysToIsoDate(first.enddatum, 1) },
+        colorId: status === 'vermietet' ? '9' : status === 'abgerechnet' ? '10' : '5',
+        extendedProperties: { private: { dkApp: 'dkcustom', dkKey: g.key } }
+      });
+    });
+    return out;
+  }
+
+  async function gcalListOwnEvents(cal, timeMin) {
+    const found = new Map();
+    let pageToken = '';
+    do {
+      const q = `/calendars/${cal}/events?privateExtendedProperty=${encodeURIComponent('dkApp=dkcustom')}&maxResults=250&showDeleted=false` +
+        (timeMin ? `&timeMin=${encodeURIComponent(timeMin)}` : '') + (pageToken ? `&pageToken=${encodeURIComponent(pageToken)}` : '');
+      const d = await gcalApi('GET', q);
+      ((d && d.items) || []).forEach(e => {
+        const key = e.extendedProperties && e.extendedProperties.private && e.extendedProperties.private.dkKey;
+        if (key) found.set(key, e);
+      });
+      pageToken = (d && d.nextPageToken) || '';
+    } while (pageToken);
+    return found;
+  }
+
+  async function gcalSync(silent = false) {
+    if (gcalSyncing) return;
+    gcalSyncing = true;
+    try {
+      const s = gcalSettings();
+      if (!s.calendarId) throw new Error('Bitte zuerst mit Google verbinden und einen Ziel-Kalender wählen.');
+      if (!gcalHasToken()) await gcalConnect();
+      const cal = encodeURIComponent(s.calendarId);
+      const timeMin = addDaysToIsoDate(new Date().toISOString().slice(0, 10), -60) + 'T00:00:00Z';
+      gcalStatus('Gleiche ab …');
+      const existing = await gcalListOwnEvents(cal, timeMin);
+      const desired = gcalDesiredEvents();
+      let neu = 0, geaendert = 0, geloescht = 0, gleich = 0;
+      for (const [key, body] of desired) {
+        const ex = existing.get(key);
+        if (!ex) { await gcalApi('POST', `/calendars/${cal}/events`, body); neu++; continue; }
+        const same = ex.summary === body.summary && (ex.description || '') === body.description &&
+          ex.start && ex.start.date === body.start.date && ex.end && ex.end.date === body.end.date && (ex.colorId || '') === body.colorId;
+        if (same) gleich++;
+        else { await gcalApi('PATCH', `/calendars/${cal}/events/${encodeURIComponent(ex.id)}`, body); geaendert++; }
+        existing.delete(key);
+      }
+      for (const [, ex] of existing) { await gcalApi('DELETE', `/calendars/${cal}/events/${encodeURIComponent(ex.id)}`); geloescht++; }
+      const msg = `✅ Abgeglichen: ${neu} neu, ${geaendert} geändert, ${geloescht} entfernt, ${gleich} unverändert.`;
+      gcalStatus(msg, 'ok');
+      if (!silent) showToast('📆 Google Kalender abgeglichen');
+      return { neu, geaendert, geloescht, gleich };
+    } catch (e) {
+      gcalStatus('❌ ' + e.message, 'err');
+      if (!silent) alert('Google Kalender: ' + e.message);
+    } finally {
+      gcalSyncing = false;
+    }
+  }
+
+  async function gcalSyncClick() { gcalUiSave(); await gcalSync(false); }
+
+  // Automatisch nur, wenn die Verbindung in dieser Sitzung schon steht (kein Popup ohne Klick)
+  async function gcalAutoSync() {
+    const s = gcalSettings();
+    if (s.auto && s.calendarId && gcalHasToken()) await gcalSync(true);
+  }
+
+  async function gcalRemoveAll() {
+    const s = gcalSettings();
+    if (!s.calendarId) return alert('Bitte zuerst mit Google verbinden und einen Kalender wählen.');
+    if (!confirm('Alle von dieser App angelegten Termine aus dem gewählten Google Kalender entfernen?\n\nEigene andere Termine bleiben unberührt.')) return;
+    try {
+      if (!gcalHasToken()) await gcalConnect();
+      const cal = encodeURIComponent(s.calendarId);
+      const existing = await gcalListOwnEvents(cal, '');
+      let n = 0;
+      for (const [, ex] of existing) { await gcalApi('DELETE', `/calendars/${cal}/events/${encodeURIComponent(ex.id)}`); n++; }
+      gcalStatus(`🗑️ ${n} Termine entfernt.`, 'ok');
+    } catch (e) { gcalStatus('❌ ' + e.message, 'err'); }
   }
 
   // =========================================================================
